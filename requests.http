@@ -1,0 +1,115 @@
+### API Clean (:5104).
+@api = http://localhost:5104
+
+### Lojas parceiras
+GET {{api}}/stores
+
+### Clientes e saldos
+GET {{api}}/customers
+
+### Compra no supermercado (2% + 2% da campanha "supermercado em dobro")
+POST {{api}}/purchases
+Content-Type: application/json
+
+{ "customerId": "c-001", "storeId": "s-mercado", "amount": 250 }
+
+### Compra na farmácia (1%; com a mudança da aula, 6%)
+POST {{api}}/purchases
+Content-Type: application/json
+
+{ "customerId": "c-001", "storeId": "s-farmacia", "amount": 100 }
+
+### Compra grande: bate no teto de R$ 100 por mês
+POST {{api}}/purchases
+Content-Type: application/json
+
+{ "customerId": "c-002", "storeId": "s-posto", "amount": 5000 }
+
+### Saldo
+GET {{api}}/customers/c-001/balance
+
+### Extrato (últimas 10 compras)
+GET {{api}}/customers/c-001/purchases
+
+### Resgate via PIX
+POST {{api}}/customers/c-001/redemptions
+Content-Type: application/json
+
+{ "amount": 5 }
+
+### Dados inválidos (400 com todos os erros)
+POST {{api}}/purchases
+Content-Type: application/json
+
+{ "customerId": "", "storeId": "", "amount": 0 }
+
+### Cliente inexistente (404)
+GET {{api}}/customers/c-999/balance
+
+### ───────────── Aula 2 · API Clean (5104) ─────────────
+
+### Compra com Idempotency-Key: rode duas vezes. A segunda devolve a mesma resposta, com "Idempotent-Replayed: true"
+POST http://localhost:5104/purchases
+Content-Type: application/json
+Idempotency-Key: 6f1c2a52-6b1e-4c43-9a43-1f2a0b6c0d01
+
+{ "customerId": "c-003", "storeId": "s-livraria", "amount": 80 }
+
+### Mesma chave, outra compra (422)
+POST http://localhost:5104/purchases
+Content-Type: application/json
+Idempotency-Key: 6f1c2a52-6b1e-4c43-9a43-1f2a0b6c0d01
+
+{ "customerId": "c-003", "storeId": "s-livraria", "amount": 99 }
+
+### v1 depreciada: veja os headers Deprecation, Sunset e Link na resposta
+POST http://localhost:5104/purchases
+Content-Type: application/json
+
+{ "customerId": "c-003", "storeId": "s-livraria", "amount": 10 }
+
+### v2 sem Idempotency-Key (400: a chave é obrigatória na v2)
+POST http://localhost:5104/v2/purchases
+Content-Type: application/json
+
+{ "customerId": "c-001", "storeId": "s-posto", "amount": 100 }
+
+### v2: 201 Created + Location, sem o saldo do cliente. Rode duas vezes: a segunda vem com "Idempotent-Replayed: true"
+POST http://localhost:5104/v2/purchases
+Content-Type: application/json
+Idempotency-Key: 0b9d5c1e-3f7a-4a2b-8c6d-2e4f6a8b0c02
+
+{ "customerId": "c-001", "storeId": "s-posto", "amount": 100 }
+
+### v2: consultar a compra (troque pelo id do Location)
+GET http://localhost:5104/v2/purchases/00000000-0000-0000-0000-000000000000
+
+### ───────────── Aula 3 · relógio da demonstração, feature flags e canário ─────────────
+
+### Que horas são para o app
+GET http://localhost:5104/demo/clock
+
+### Pular para a quinta 26/11 às 23:59:40 (o relógio continua andando a partir daí)
+PUT http://localhost:5104/demo/clock
+Content-Type: application/json
+
+{ "now": "2026-11-26T23:59:40-03:00" }
+
+### Voltar para a hora real
+DELETE http://localhost:5104/demo/clock
+
+### Feature flags (aula 3)
+GET http://localhost:5104/feature-flags
+
+### Ligar a Black Friday só para o grupo de teste (off · test · on)
+PUT http://localhost:5104/feature-flags/black-friday
+Content-Type: application/json
+X-Operador: aluno
+
+{ "state": "test" }
+
+### Pelo gateway, com o canário no ar (./canario.sh subir): veja o header X-Versao
+POST http://localhost:5100/purchases
+Content-Type: application/json
+
+{ "customerId": "c-001", "storeId": "s-farmacia", "amount": 5 }

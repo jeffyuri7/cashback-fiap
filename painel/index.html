@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cashback · painel do curso</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topo">
+    <div class="marca">
+      <span class="logo">%</span>
+      <div>
+        <h1>Cashback</h1>
+        <p>app de cashback · API Clean via gateway (:5100)</p>
+      </div>
+    </div>
+    <nav class="abas" role="tablist">
+      <button class="aba ativa" data-aba="app" role="tab">App</button>
+      <button class="aba" data-aba="loja" role="tab">Loja parceira (HTTP)</button>
+      <button class="aba" data-aba="operacao" role="tab">Operação</button>
+    </nav>
+    <ul class="status" id="status"></ul>
+    <!-- aula 3: o relógio do app, ajustável só na demonstração (para "pular" para a Black Friday) -->
+    <div class="relogio" title="A hora que o app está usando. Na demonstração, dá para pular para outro momento.">
+      <span class="relogio-hora" id="relogio-hora">—</span>
+      <select id="relogio-pular" aria-label="Pular para">
+        <option value="">hora real</option>
+        <option value="2026-11-26T17:00:00-03:00">qui 26/11 · 17:00</option>
+        <option value="2026-11-26T23:59:40-03:00">qui 26/11 · 23:59:40</option>
+        <option value="2026-11-27T00:40:00-03:00">sex 27/11 · 00:40</option>
+        <option value="2026-11-28T10:00:00-03:00">sáb 28/11 · 10:00</option>
+        <option value="2026-11-30T09:00:00-03:00">seg 30/11 · 09:00</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- ───────────── O app: clientes, compra, resgate e extrato ───────────── -->
+  <main id="aba-app" class="aba-conteudo">
+    <div class="grade">
+      <section class="cartao">
+        <h2>Clientes</h2>
+        <div id="clientes" class="clientes"></div>
+      </section>
+
+      <section class="cartao">
+        <h2>Nova compra numa loja parceira</h2>
+        <form id="form-compra" class="form">
+          <label>Cliente <select name="cliente" class="sel-cliente"></select></label>
+          <label>Loja parceira <select name="loja" class="sel-loja"></select></label>
+          <label>Valor da compra (R$) <input name="valor" type="number" min="0" step="0.01" value="250"></label>
+          <button type="submit">Registrar compra</button>
+        </form>
+        <div id="resultado-compra" class="resultado"></div>
+      </section>
+
+      <section class="cartao">
+        <h2>Resgatar via PIX</h2>
+        <form id="form-resgate" class="form">
+          <label>Cliente <select name="cliente" class="sel-cliente"></select></label>
+          <label>Valor do resgate (R$) <input name="valor" type="number" min="0" step="0.01" value="5"></label>
+          <button type="submit">Resgatar</button>
+        </form>
+        <div id="resultado-resgate" class="resultado"></div>
+      </section>
+
+      <section class="cartao largo">
+        <h2>Extrato <small id="extrato-quem"></small></h2>
+        <table class="tabela">
+          <thead><tr><th>Quando</th><th>Loja</th><th class="num">Compra</th><th class="num">%</th><th class="num">Cashback</th><th class="num">Black Friday</th></tr></thead>
+          <tbody id="extrato"></tbody>
+        </table>
+      </section>
+    </div>
+  </main>
+
+  <!-- ───────────── Loja parceira: a requisição HTTP como ela é (aula 2) ───────────── -->
+  <main id="aba-loja" class="aba-conteudo escondido">
+    <p class="dica topo-dica">O sistema de uma loja parceira chamando a <strong>API Clean</strong> (:5104), o projeto que evolui a partir da aula 2. Aqui aparece tudo o que a aba App esconde: método, caminho, headers, status e corpo.</p>
+    <div class="grade grade-2">
+      <section class="cartao">
+        <h2>Requisição da loja</h2>
+        <form id="form-loja" class="form">
+          <label>Versão do contrato
+            <select name="versao">
+              <option value="/purchases">v1 · POST /purchases</option>
+              <option value="/v2/purchases">v2 · POST /v2/purchases</option>
+            </select>
+          </label>
+          <div class="linha-campos">
+            <label>Cliente <select name="cliente" class="sel-cliente"></select></label>
+            <label>Loja parceira <select name="loja" class="sel-loja"></select></label>
+            <label>Valor (R$) <input name="valor" type="number" min="0" step="0.01" value="250"></label>
+          </div>
+          <label>Corpo (JSON, editável: tire um campo para ver o contrato recusar)
+            <textarea name="corpo" rows="5" spellcheck="false"></textarea>
+          </label>
+          <div class="linha-campos chave">
+            <label class="check"><input type="checkbox" name="usarChave"> enviar <code>Idempotency-Key</code></label>
+            <input name="chave" aria-label="Idempotency-Key">
+            <button type="button" class="secundario" id="nova-chave">nova chave</button>
+          </div>
+          <label class="check"><input type="checkbox" name="timeout"> simular timeout no envio: a compra chega na API, mas a resposta se perde no caminho</label>
+          <div class="botoes">
+            <button type="submit">Enviar</button>
+            <button type="button" class="secundario" id="reenviar" disabled>Reenviar a mesma requisição (retry)</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="cartao">
+        <h2>O que trafegou</h2>
+        <pre class="http" id="http-req"><span class="vazio">Nenhuma requisição ainda.</span></pre>
+        <pre class="http" id="http-res"></pre>
+        <ol class="tentativas" id="tentativas"></ol>
+      </section>
+
+      <section class="cartao largo">
+        <h2>Compras do cliente na API Clean <small id="loja-quem"></small></h2>
+        <table class="tabela">
+          <thead><tr><th>Quando</th><th>Loja</th><th class="num">Compra</th><th class="num">%</th><th class="num">Cashback</th><th class="num">Black Friday</th></tr></thead>
+          <tbody id="loja-extrato"></tbody>
+        </table>
+        <p class="dica">Duas linhas iguais com segundos de diferença = a mesma compra paga duas vezes.</p>
+      </section>
+    </div>
+  </main>
+
+  <!-- ───────────── Operação: o que se liga e desliga em produção, sem deploy (aula 3) ───────────── -->
+  <main id="aba-operacao" class="aba-conteudo escondido">
+    <p class="dica topo-dica">O que a operação muda <strong>em produção, sem deploy</strong>. A mudança vale na hora, para a próxima compra, e fica registrada (quem e quando).</p>
+    <div class="grade grade-2">
+      <section class="cartao largo">
+        <h2>Feature flags</h2>
+        <div id="flags" class="flags"></div>
+      </section>
+
+      <section class="cartao largo">
+        <h2>Canário <small>a fatia muda no terminal: <code>./canario.sh 50</code> · <code>./canario.sh 0</code> é o rollback</small></h2>
+        <form id="form-rajada" class="form linha-rajada">
+          <label>Cliente <select name="cliente" class="sel-cliente"></select></label>
+          <label>Loja parceira <select name="loja" class="sel-loja"></select></label>
+          <label>Valor (R$) <input name="valor" type="number" min="0" step="0.01" value="5"></label>
+          <label>Compras <input name="quantas" type="number" min="1" max="100" value="20"></label>
+          <button type="submit">Enviar a rajada</button>
+        </form>
+        <div id="rajada-resultado" class="resultado"></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

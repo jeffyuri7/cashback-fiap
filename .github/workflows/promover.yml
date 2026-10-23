@@ -1,0 +1,61 @@
+# Promover um pacote aprovado a um ambiente (aula 3). É o portão humano: alguém clica em "Run workflow".
+# Não compila nada: baixa o pacote que o pipeline gerou naquele run e confere que é o mesmo (sha256).
+# Num repositório privado de conta pessoal (plano Free), o GitHub não oferece aprovação obrigatória por ambiente
+# (required reviewers): por isso o portão aqui é o disparo manual. No banco, a ferramenta corporativa faz esse papel.
+# O deploy em si é simulado: neste curso, a API roda na sua máquina, que o GitHub não alcança.
+name: promover
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Número do run do pipeline cujo pacote vai subir (aparece no resumo do pipeline)
+        required: true
+        type: string
+      ambiente:
+        description: Para onde
+        required: true
+        type: choice
+        options: [homologacao, producao]
+        default: homologacao
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  promover:
+    name: Promover para ${{ inputs.ambiente }}
+    runs-on: ubuntu-24.04
+    # As entradas viram variáveis de ambiente, e não texto colado no comando: assim ninguém injeta comandos pelo formulário.
+    env:
+      AMBIENTE: ${{ inputs.ambiente }}
+      RUN_ORIGEM: ${{ inputs.run_id }}
+      QUEM: ${{ github.actor }}
+    steps:
+      - name: Baixar o pacote daquele run (sem compilar de novo)
+        uses: actions/download-artifact@v8
+        with:
+          name: cashback-api
+          path: pacote
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Conferir que é o mesmo pacote que passou nas provas
+        working-directory: pacote
+        run: |
+          sha256sum --check --quiet SHA256SUMS && cat versao.txt
+      - name: Aplicar as migrações (simulado)
+        working-directory: pacote
+        run: |
+          ls db/migracoes/ | grep -E '^[0-9]{3}-' | sed 's/^/aplicaria: /' || echo "nenhuma migração neste pacote"
+      - name: Implantar (simulado)
+        run: |
+          echo "Implantando em $AMBIENTE o pacote do run $RUN_ORIGEM, disparado por $QUEM."
+      - name: Resumo
+        run: |
+          {
+            echo "### $AMBIENTE: pacote do run $RUN_ORIGEM"
+            echo '```'; cat pacote/versao.txt; echo '```'
+            echo "- conferido por sha256: é o mesmo pacote que passou no pipeline"
+            echo "- disparado por **$QUEM** em $(date -u '+%d/%m/%Y %H:%M') (UTC)"
+          } >> "$GITHUB_STEP_SUMMARY"

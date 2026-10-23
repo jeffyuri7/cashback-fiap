@@ -1,0 +1,101 @@
+# Contrato da API de compras para as lojas parceiras, versão 1.
+# Escrito DEPOIS do código (code-first): documenta o que a API já fazia desde a aula 1.
+# DEPRECIADA desde 01/11/2026; sai do ar em 31/03/2027. Sucessora: compras-v2.yaml.
+openapi: 3.1.0
+info:
+  title: Cashback · API de compras para lojas parceiras
+  version: "1"
+  description: |
+    A loja parceira confirma a compra de um cliente; o app calcula e credita o cashback.
+    Erros de dados vêm com status 400 e a lista de problemas em "errors".
+    Aula 2: aceita o header Idempotency-Key (opcional). Com a mesma chave, o retry devolve a resposta
+    da primeira vez em vez de registrar a compra de novo. As chaves valem 24 horas.
+servers:
+  - url: http://localhost:5104
+paths:
+  /purchases:
+    post:
+      summary: Confirmar uma compra
+      operationId: registrarCompraV1
+      deprecated: true
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Compra"
+            example: { customerId: c-001, storeId: s-mercado, amount: 250 }
+      responses:
+        "200":
+          description: Compra registrada e cashback creditado (ou a resposta guardada, num retry com a mesma chave).
+          headers:
+            Deprecation:
+              description: "Desde quando a v1 está depreciada (RFC 9745), ex.: @1793491200."
+              schema: { type: string }
+            Sunset:
+              description: "Quando a v1 deixa de responder (RFC 8594), ex.: Wed, 31 Mar 2027 23:59:59 GMT."
+              schema: { type: string }
+            Link:
+              description: 'Para onde migrar: </v2/purchases>; rel="successor-version".'
+              schema: { type: string }
+            Idempotent-Replayed:
+              description: '"true" quando a resposta é a da primeira vez (a compra não foi registrada de novo).'
+              schema: { type: string, enum: ["true"] }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompraRegistradaV1"
+        "400":
+          description: Dados fora do contrato (campo obrigatório ausente, valor inválido, loja inexistente).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Erros"
+        "404":
+          description: Cliente não encontrado (sem corpo).
+        "409":
+          description: A compra com esta Idempotency-Key ainda está sendo processada; tente de novo em instantes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Erros"
+        "422":
+          description: Esta Idempotency-Key já foi usada com outra compra.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Erros"
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Identificador único da compra, gerado pela loja (recomendado um UUID). Repita o MESMO valor no retry.
+      schema: { type: string, minLength: 1, maxLength: 255 }
+  schemas:
+    Compra:
+      type: object
+      required: [customerId, storeId, amount]
+      properties:
+        customerId: { type: string, description: Cliente que comprou. }
+        storeId: { type: string, description: Loja parceira que confirma a compra. }
+        amount: { type: number, exclusiveMinimum: 0, description: Valor da compra em reais. }
+    CompraRegistradaV1:
+      type: object
+      required: [purchaseId, category, percentage, cashback, balance]
+      properties:
+        purchaseId: { type: string, format: uuid }
+        category: { type: string, examples: [supermarket] }
+        percentage: { type: number, description: "Percentual aplicado (0.04 = 4%)." }
+        cashback: { type: number, description: Valor creditado ao cliente. }
+        balance: { type: number, description: Saldo do cliente depois do crédito. }
+    Erros:
+      type: object
+      required: [errors]
+      properties:
+        errors:
+          type: array
+          items: { type: string }

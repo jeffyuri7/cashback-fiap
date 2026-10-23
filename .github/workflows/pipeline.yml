@@ -1,0 +1,106 @@
+# Pipeline do app de cashback (aula 3). O caminho de toda mudança até virar um pacote pronto para produção.
+# Etapas, das rápidas às lentas: testes e scan em paralelo, as migrações num banco de teste, e o pacote,
+# que só é gerado se tudo passou. O pacote é gerado UMA vez; o workflow "promover" leva ESSE pacote aos ambientes.
+# Plano B sem internet: ./scripts/pipeline-local.sh (as mesmas etapas, na máquina).
+name: pipeline
+
+on:
+  push:
+    branches: ["**"]   # todo push em branch; push de tag não dispara
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOLUCAO: clean/Cashback.Clean.sln
+  DOTNET_NOLOGO: true
+
+jobs:
+  testes:
+    name: Build e testes
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Build (o código compila)
+        run: dotnet build "$SOLUCAO" -c Release
+      - name: Testes (as regras funcionam, sem banco)
+        run: dotnet test "$SOLUCAO" -c Release --no-build
+
+  scan:
+    name: Scan de dependências
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Nenhuma dependência com vulnerabilidade alta ou crítica
+        run: |
+          dotnet package list --project "$SOLUCAO" --vulnerable --include-transitive --format json > scan.json
+          graves="$(jq -r '[.projects[].frameworks[]? | (.topLevelPackages[]?, .transitivePackages[]?)
+            | select(any(.vulnerabilities[]?; .severity == "High" or .severity == "Critical"))
+            | "\(.id) \(.resolvedVersion)"] | unique | .[]' scan.json)"
+          if [ -n "$graves" ]; then
+            echo "::error::Pacotes com vulnerabilidade alta ou crítica: $graves"
+            exit 1
+          fi
+          echo "Nenhuma vulnerabilidade alta ou crítica nas dependências (diretas e transitivas)."
+
+  migracoes:
+    name: Migrações num banco de teste
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: cashback
+          POSTGRES_PASSWORD: cashback
+          POSTGRES_DB: cashback
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cashback -d cashback"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      PGHOST: localhost
+      PGUSER: cashback
+      PGPASSWORD: cashback
+      PGDATABASE: cashback
+    steps:
+      - uses: actions/checkout@v7
+      - name: O esquema e os dados de exemplo
+        run: psql -q -v ON_ERROR_STOP=1 -f db/01-schema.sql -f db/02-seed.sql
+      - name: Todas as migrações aplicam, em ordem
+        run: CASHBACK_PSQL="psql" ./migrar.sh && CASHBACK_PSQL="psql" ./migrar.sh status
+
+  pacote:
+    name: Pacote (gerado uma vez)
+    needs: [testes, scan, migracoes]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Publicar a API e juntar as migrações
+        run: |
+          dotnet publish clean/src/Cashback.Clean.Api/Cashback.Clean.Api.csproj -c Release -o pacote/api
+          cp -R db pacote/db
+          printf 'commit %s\nrun %s\ngerado em %s (UTC)\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$(date -u '+%d/%m/%Y %H:%M')" > pacote/versao.txt
+          (cd pacote && find api db versao.txt -type f | sort | xargs sha256sum > SHA256SUMS)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cashback-api
+          path: pacote/
+          retention-days: 30
+      - name: Resumo
+        run: |
+          {
+            echo "### Pacote pronto para promover"
+            echo "- commit: \`${GITHUB_SHA::7}\`"
+            echo "- para levar a um ambiente: **Actions → promover → Run workflow**, com o run \`$GITHUB_RUN_ID\`"
+          } >> "$GITHUB_STEP_SUMMARY"

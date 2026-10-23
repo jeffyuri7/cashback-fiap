@@ -1,0 +1,111 @@
+# Contrato da API de compras para as lojas parceiras, versão 2.
+# Escrito ANTES do código (design-first): revisado com as lojas e só depois implementado.
+# O que muda em relação à v1 (tudo breaking, por isso a versão nova):
+#   1. Idempotency-Key obrigatório;
+#   2. 201 Created + Location, em vez de 200 OK;
+#   3. a resposta não traz mais o saldo do cliente (não é informação da loja).
+openapi: 3.1.0
+info:
+  title: Cashback · API de compras para lojas parceiras
+  version: "2"
+  description: |
+    A loja parceira confirma a compra de um cliente; o app calcula e credita o cashback.
+    Toda compra leva uma Idempotency-Key gerada pela loja (um UUID por compra). Num retry, repita a MESMA chave:
+    o app devolve a resposta da primeira vez e não registra a compra de novo. As chaves valem 24 horas.
+    Depois de um timeout, a loja também pode consultar a compra pelo endereço do header Location.
+servers:
+  - url: http://localhost:5104
+paths:
+  /v2/purchases:
+    post:
+      summary: Confirmar uma compra
+      operationId: registrarCompraV2
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Identificador único da compra, gerado pela loja (recomendado um UUID). Repita o MESMO valor no retry.
+          schema: { type: string, minLength: 1, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Compra"
+            example: { customerId: c-001, storeId: s-mercado, amount: 250 }
+      responses:
+        "201":
+          description: Compra registrada (ou a resposta guardada, num retry com a mesma chave).
+          headers:
+            Location:
+              description: Endereço da compra criada (/v2/purchases/{id}).
+              schema: { type: string }
+            Idempotent-Replayed:
+              description: '"true" quando a resposta é a da primeira vez (a compra não foi registrada de novo).'
+              schema: { type: string, enum: ["true"] }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompraRegistrada"
+        "400":
+          description: Dados fora do contrato ou Idempotency-Key ausente.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Erros"
+        "404":
+          description: Cliente não encontrado (sem corpo).
+        "409":
+          description: A compra com esta Idempotency-Key ainda está sendo processada; tente de novo em instantes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Erros"
+        "422":
+          description: Esta Idempotency-Key já foi usada com outra compra.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Erros"
+  /v2/purchases/{id}:
+    get:
+      summary: Consultar uma compra (por exemplo, depois de um timeout)
+      operationId: consultarCompraV2
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: A compra registrada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompraRegistrada"
+        "404":
+          description: Compra não encontrada (sem corpo).
+components:
+  schemas:
+    Compra:
+      type: object
+      required: [customerId, storeId, amount]
+      properties:
+        customerId: { type: string, description: Cliente que comprou. }
+        storeId: { type: string, description: Loja parceira que confirma a compra. }
+        amount: { type: number, exclusiveMinimum: 0, description: Valor da compra em reais. }
+    CompraRegistrada:
+      type: object
+      required: [purchaseId, category, percentage, cashback]
+      properties:
+        purchaseId: { type: string, format: uuid }
+        category: { type: string, examples: [supermarket] }
+        percentage: { type: number, description: "Percentual aplicado (0.04 = 4%)." }
+        cashback: { type: number, description: Valor creditado ao cliente. }
+    Erros:
+      type: object
+      required: [errors]
+      properties:
+        errors:
+          type: array
+          items: { type: string }

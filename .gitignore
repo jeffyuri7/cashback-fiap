@@ -1,0 +1,13 @@
+bin/
+obj/
+.idea/
+.vs/
+.vscode/
+*.user
+*.DotSettings.user
+.DS_Store
+
+# aula 3 em diante: o relógio da demonstração, as versões publicadas para o canário e os pacotes do pipeline local
+.relogio
+.versoes/
+artefatos/
