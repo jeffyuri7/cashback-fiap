@@ -1,0 +1,486 @@
+diff --git a/canario.sh b/canario.sh
+new file mode 100755
+index 0000000..0e452f0
+--- /dev/null
++++ b/canario.sh
+@@ -0,0 +1,107 @@
++#!/usr/bin/env bash
++# O canário da aula 3: duas versões da API no ar, e o gateway (nginx) dividindo o tráfego entre elas.
++#   ./canario.sh subir      publica as duas versões e sobe ambas (Ctrl+C para parar):
++#                             estável = o último commit (o que já está "em produção") · porta 5104
++#                             canário = o código como está agora, com as mudanças   · porta 5105
++#                           e começa com 10% do tráfego no canário
++#   ./canario.sh 50         muda a fatia do canário (0 a 100) sem derrubar ninguém (reload do nginx)
++#   ./canario.sh 0          tira todo o tráfego do canário: é o rollback
++#   ./canario.sh status     mostra a divisão atual
++# O painel passa a falar com o gateway (localhost:5100), e cada resposta diz qual versão atendeu (header X-Versao).
++set -euo pipefail
++cd "$(dirname "$0")"
++RAIZ="$(pwd -P)"
++
++PORTA_ESTAVEL="${CASHBACK_PORTA_API:-5104}"
++PORTA_CANARIO="$((PORTA_ESTAVEL + 1))"
++CONF=nginx/canario.conf
++
++# Escreve a divisão e recarrega o nginx. O reload é gracioso: as requisições em andamento terminam com a configuração antiga.
++dividir() {
++  local canario=$1 estavel=$((100 - $1)) linha_estavel linha_canario
++  linha_estavel="server host.docker.internal:$PORTA_ESTAVEL weight=$estavel resolve;"
++  linha_canario="server host.docker.internal:$PORTA_CANARIO weight=$canario resolve;"
++  [ "$estavel" -eq 0 ] && linha_estavel="server host.docker.internal:$PORTA_ESTAVEL down resolve;"
++  [ "$canario" -eq 0 ] && linha_canario="server host.docker.internal:$PORTA_CANARIO down resolve;"
++  cat > "$CONF" <<NGINX
++# Escrito pelo ./canario.sh: canário com $canario% do tráfego, estável com $estavel%.
++# A API roda na máquina (host.docker.internal). Só IPv4: o endereço IPv6 que o Docker também devolve não responde.
++resolver 127.0.0.11 ipv6=off valid=30s;
++
++upstream api {
++    zone api 64k;                 # a contagem é uma só para todos os workers do nginx: 10% é 1 em cada 10
++    $linha_estavel   # estável
++    $linha_canario   # canário
++}
++
++server {
++    listen 80;
++    location / {
++        proxy_pass http://api;
++        proxy_next_upstream off;  # erro no canário aparece como erro; não é escondido mandando de novo para a estável
++    }
++}
++NGINX
++  if docker compose ps --status running -q gateway 2>/dev/null | grep -q . \
++     && docker compose exec -T gateway test -s /etc/nginx/conf.d/canario.conf 2>/dev/null; then
++    docker compose exec -T gateway nginx -t -q && docker compose exec -T gateway nginx -s reload 2>/dev/null
++  else
++    # Sem gateway, ou com um gateway antigo que não enxerga mais a pasta nginx/ (ela foi apagada e criada de novo,
++    # por exemplo por um "git clean" para voltar ao início): cria o container de novo.
++    docker compose up -d --force-recreate gateway >/dev/null 2>&1
++  fi
++  # os workers novos assumem em instantes (os antigos terminam o que estavam atendendo) e o nome da máquina é resolvido de novo
++  sleep 2
++  echo "Gateway: canário com $canario% do tráfego · estável com $estavel%."
++}
++
++publicar() {
++  local nome=$1 fonte=$2
++  echo "Publicando a versão $nome..."
++  dotnet publish "$fonte/clean/src/Cashback.Clean.Api/Cashback.Clean.Api.csproj" -c Release -o ".versoes/$nome" -v q -nologo >/dev/null
++}
++
++rodar() {
++  local nome=$1 porta=$2
++  (
++    cd ".versoes/$nome"
++    export Versao="$nome" Urls="http://localhost:$porta" Demo__ClockFile="$RAIZ/.relogio"
++    if [ -n "${CASHBACK_PORTA_BANCO:-}" ]; then
++      export ConnectionStrings__Cashback="Host=localhost;Port=$CASHBACK_PORTA_BANCO;Database=cashback;Username=cashback;Password=cashback;Search Path=clean"
++    fi
++    exec dotnet Cashback.Clean.Api.dll
++  ) 2>&1 | sed -u "s/^/[$nome] /" &
++}
++
++case "${1:-}" in
++  subir)
++    ./rodar-apis.sh parar >/dev/null
++    for porta in "$PORTA_ESTAVEL" "$PORTA_CANARIO"; do
++      if lsof -nP -iTCP:"$porta" -sTCP:LISTEN >/dev/null 2>&1; then
++        echo "A porta $porta está ocupada:"; lsof -nP -iTCP:"$porta" -sTCP:LISTEN; exit 1
++      fi
++    done
++    # a estável sai do último commit, sem as mudanças ainda não commitadas
++    rm -rf .versoes/fonte-estavel && mkdir -p .versoes/fonte-estavel
++    git archive HEAD clean | tar -x -C .versoes/fonte-estavel
++    publicar estavel .versoes/fonte-estavel
++    publicar canario .
++    trap 'trap - INT TERM; echo; echo "Encerrando as duas versões..."; kill $(jobs -p) 2>/dev/null; wait; exit 0' INT TERM
++    rodar estavel "$PORTA_ESTAVEL"
++    rodar canario "$PORTA_CANARIO"
++    dividir 10
++    echo "Estável em :$PORTA_ESTAVEL · canário em :$PORTA_CANARIO · gateway em localhost:${CASHBACK_PORTA_GATEWAY:-5100} · Ctrl+C para parar"
++    wait
++    ;;
++  status)
++    grep -E '^# Escrito' "$CONF" 2>/dev/null || echo "Sem divisão ainda: ./canario.sh subir"
++    ;;
++  ''|*[!0-9]*)
++    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
++    exit 1
++    ;;
++  *)
++    [ "$1" -le 100 ] || { echo "A fatia vai de 0 a 100."; exit 1; }
++    dividir "$1"
++    ;;
++esac
+diff --git a/clean/src/Cashback.Clean.Application/Dtos/Responses/ResponseRegisterPurchaseJson.cs b/clean/src/Cashback.Clean.Application/Dtos/Responses/ResponseRegisterPurchaseJson.cs
+index ba0f204..ab332c7 100644
+--- a/clean/src/Cashback.Clean.Application/Dtos/Responses/ResponseRegisterPurchaseJson.cs
++++ b/clean/src/Cashback.Clean.Application/Dtos/Responses/ResponseRegisterPurchaseJson.cs
+@@ -1,3 +1,5 @@
+ namespace Cashback.Clean.Application.Dtos.Responses;
+ 
+-public record ResponseRegisterPurchaseJson(Guid PurchaseId, string Category, decimal Percentage, decimal Cashback, decimal Balance);
++// campaignBonus (aula 3) é um campo novo no fim: mudança compatível, quem não conhece o campo o ignora (leitor tolerante)
++public record ResponseRegisterPurchaseJson(Guid PurchaseId, string Category, decimal Percentage, decimal Cashback, decimal Balance,
++    decimal CampaignBonus = 0);
+diff --git a/clean/src/Cashback.Clean.Application/UseCases/Purchases/Register/RegisterPurchaseUseCase.cs b/clean/src/Cashback.Clean.Application/UseCases/Purchases/Register/RegisterPurchaseUseCase.cs
+index b3adca5..8e41243 100644
+--- a/clean/src/Cashback.Clean.Application/UseCases/Purchases/Register/RegisterPurchaseUseCase.cs
++++ b/clean/src/Cashback.Clean.Application/UseCases/Purchases/Register/RegisterPurchaseUseCase.cs
+@@ -66,15 +66,17 @@ public class RegisterPurchaseUseCase(
+             .Where(flag => flag.IsEnabledFor(account.Owner.Id, now)).Select(flag => flag.Name).ToHashSet();
+         var quote = calculator.Calculate(request.Amount, store.Category, now, enabledFlags);
+         var credited = account.Credit(quote.Amount, now);
++        // se o teto do mês cortou o crédito, o corte sai primeiro do bônus da campanha
++        var campaignBonus = credited - Math.Min(quote.Amount - quote.CampaignBonus, credited);
+ 
+         var purchase = new Purchase(Guid.NewGuid(), account.Owner.Id, store.Id, request.Amount, store.Category,
+-            quote.Percentage, credited, now);
++            quote.Percentage, credited, now, campaignBonus);
+ 
+         await accountRepository.Save(account);
+         await purchaseRepository.Add(purchase);
+         await notifier.Notify(account.Owner.Id, $"você ganhou R$ {credited:0.00} de cashback!");
+ 
+-        return new ResponseRegisterPurchaseJson(purchase.Id, store.Category, quote.Percentage, credited, account.Balance);
++        return new ResponseRegisterPurchaseJson(purchase.Id, store.Category, quote.Percentage, credited, account.Balance, campaignBonus);
+     }
+ 
+     // O que identifica "a mesma compra": quem, onde e quanto.
+diff --git a/clean/src/Cashback.Clean.Domain/Entities/Purchase.cs b/clean/src/Cashback.Clean.Domain/Entities/Purchase.cs
+index 902e061..dee9317 100644
+--- a/clean/src/Cashback.Clean.Domain/Entities/Purchase.cs
++++ b/clean/src/Cashback.Clean.Domain/Entities/Purchase.cs
+@@ -1,5 +1,10 @@
+ namespace Cashback.Clean.Domain.Entities;
+ 
++/// <param name="Cashback">o total creditado</param>
++/// <param name="CampaignBonus">a parte do total que veio da campanha com flag (aula 3: a Black Friday)</param>
+ public record Purchase(
+     Guid Id, string CustomerId, string StoreId, decimal Amount, string Category,
+-    decimal Percentage, decimal Cashback, DateTimeOffset CreatedAt);
++    decimal Percentage, decimal Cashback, DateTimeOffset CreatedAt, decimal CampaignBonus = 0)
++{
++    public decimal CashbackBase => Cashback - CampaignBonus;
++}
+diff --git a/clean/src/Cashback.Clean.Domain/Rules/BlackFridayCampaign.cs b/clean/src/Cashback.Clean.Domain/Rules/BlackFridayCampaign.cs
+index b6f94d4..130101f 100644
+--- a/clean/src/Cashback.Clean.Domain/Rules/BlackFridayCampaign.cs
++++ b/clean/src/Cashback.Clean.Domain/Rules/BlackFridayCampaign.cs
+@@ -9,10 +9,7 @@ public class BlackFridayCampaign : ICashbackRule
+ {
+     public string? Flag => "black-friday";
+ 
+-    public decimal PercentageFor(string category, DateTimeOffset purchaseDate) => category switch
+-    {
+-        "fuel" => 0m,
+-        "pharmacy" => 0.10m, // a farmácia já tem campanha própria: 5% dela + 5% da Black Friday
+-        _ => 0.05m
+-    };
++    // Correção de sábado: a farmácia tinha 10% aqui, somando de novo os 5% que a PharmacyCampaign já dá.
++    // A Black Friday soma 5% em toda categoria, menos combustível; as outras campanhas continuam valendo por conta própria.
++    public decimal PercentageFor(string category, DateTimeOffset purchaseDate) => category == "fuel" ? 0m : 0.05m;
+ }
+diff --git a/clean/src/Cashback.Clean.Domain/Rules/CashbackCalculator.cs b/clean/src/Cashback.Clean.Domain/Rules/CashbackCalculator.cs
+index 1f32aff..3478215 100644
+--- a/clean/src/Cashback.Clean.Domain/Rules/CashbackCalculator.cs
++++ b/clean/src/Cashback.Clean.Domain/Rules/CashbackCalculator.cs
+@@ -7,12 +7,17 @@ public class CashbackCalculator(IEnumerable<ICashbackRule> rules)
+     public CashbackQuote Calculate(decimal amount, string category, DateTimeOffset purchaseDate,
+         IReadOnlySet<string>? enabledFlags = null)
+     {
+-        var percentage = rules
++        var applied = rules
+             .Where(rule => rule.Flag is null || (enabledFlags?.Contains(rule.Flag) ?? false))
+-            .Sum(rule => rule.PercentageFor(category, purchaseDate));
+-        return new CashbackQuote(percentage, Math.Round(amount * percentage, 2, MidpointRounding.AwayFromZero));
++            .ToList();
++        var percentage = applied.Sum(rule => rule.PercentageFor(category, purchaseDate));
++        // o que vem das campanhas com flag (a Black Friday), separado do cashback base
++        var bonusPercentage = applied.Where(rule => rule.Flag is not null).Sum(rule => rule.PercentageFor(category, purchaseDate));
++        return new CashbackQuote(percentage, Round(amount * percentage), Round(amount * bonusPercentage));
+     }
++
++    private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
+ }
+ 
+-/// <summary>O percentual somado de todas as regras e o cashback que ele gera (antes do teto).</summary>
+-public record CashbackQuote(decimal Percentage, decimal Amount);
++/// <summary>O percentual somado de todas as regras e o cashback que ele gera (antes do teto), com a parte que veio de campanha com flag.</summary>
++public record CashbackQuote(decimal Percentage, decimal Amount, decimal CampaignBonus = 0);
+diff --git a/clean/src/Cashback.Clean.Infrastructure/Repositories/Repositories.cs b/clean/src/Cashback.Clean.Infrastructure/Repositories/Repositories.cs
+index 2652f05..1e7970a 100644
+--- a/clean/src/Cashback.Clean.Infrastructure/Repositories/Repositories.cs
++++ b/clean/src/Cashback.Clean.Infrastructure/Repositories/Repositories.cs
+@@ -27,9 +27,11 @@ public class PurchaseRepository(PostgresConnection db) : IPurchaseRepository
+         await using var conn = db.Open();
+         await conn.ExecuteAsync(
+             """
+-            INSERT INTO purchases (id, customer_id, store_id, amount, category, percentage, cashback, created_at)
+-            VALUES (@Id, @CustomerId, @StoreId, @Amount, @Category, @Percentage, @Cashback, @CreatedAt)
+-            """, purchase);
++            INSERT INTO purchases (id, customer_id, store_id, amount, category, percentage, cashback, created_at,
++                                   cashback_base, campaign_bonus)
++            VALUES (@Id, @CustomerId, @StoreId, @Amount, @Category, @Percentage, @Cashback, @CreatedAt,
++                    @CashbackBase, @CampaignBonus)
++            """, purchase); // expand/contract (aula 3): escreve na coluna antiga (cashback) E nas novas; ainda lê da antiga
+     }
+ 
+     public async Task<Purchase?> Get(Guid id)
+diff --git a/clean/tests/Cashback.Clean.Tests/Domain/BlackFridayCampaignTests.cs b/clean/tests/Cashback.Clean.Tests/Domain/BlackFridayCampaignTests.cs
+index 8d83299..57389ed 100644
+--- a/clean/tests/Cashback.Clean.Tests/Domain/BlackFridayCampaignTests.cs
++++ b/clean/tests/Cashback.Clean.Tests/Domain/BlackFridayCampaignTests.cs
+@@ -27,6 +27,25 @@ public class BlackFridayCampaignTests
+         Assert.Equal(0.03m, quote.Percentage);
+     }
+ 
++    // A correção de sábado: a farmácia pagava 10% a mais, e nenhum teste olhava a farmácia.
++    // Agora todas as categorias são cobertas: a campanha soma exatamente 5%, menos no combustível.
++    [Theory]
++    [InlineData("supermarket", 0.05)]
++    [InlineData("pharmacy", 0.05)]
++    [InlineData("books", 0.05)]
++    [InlineData("fuel", 0.0)]
++    public void The_campaign_adds_exactly_5_percent_except_fuel(string category, double expected)
++    {
++        var calculator = new CashbackCalculator(
++            [new CategoryRule(), new SupermarketDoubleCampaign(), new PharmacyCampaign(), new BlackFridayCampaign()]);
++
++        var withFlag = calculator.Calculate(100m, category, BlackFriday, FlagOn);
++        var withoutFlag = calculator.Calculate(100m, category, BlackFriday);
++
++        Assert.Equal((decimal)expected, withFlag.Percentage - withoutFlag.Percentage);
++        Assert.Equal(withFlag.Amount - withoutFlag.Amount, withFlag.CampaignBonus);
++    }
++
+     [Fact]
+     public void With_the_flag_off_the_campaign_does_not_count()
+     {
+diff --git a/clean/tests/Cashback.Clean.Tests/UseCases/RegisterPurchaseUseCaseTests.cs b/clean/tests/Cashback.Clean.Tests/UseCases/RegisterPurchaseUseCaseTests.cs
+index a85f64b..cef3deb 100644
+--- a/clean/tests/Cashback.Clean.Tests/UseCases/RegisterPurchaseUseCaseTests.cs
++++ b/clean/tests/Cashback.Clean.Tests/UseCases/RegisterPurchaseUseCaseTests.cs
+@@ -1,3 +1,4 @@
++using Cashback.Clean.Application.Abstractions;
+ using Cashback.Clean.Application.Dtos.Requests;
+ using Cashback.Clean.Application.Exceptions;
+ using Cashback.Clean.Application.UseCases.Purchases.Register;
+@@ -58,6 +59,25 @@ public class RegisterPurchaseUseCaseTests
+         await Assert.ThrowsAsync<NotFoundException>(() => CreateUseCase().Execute(request));
+     }
+ 
++    // ───────────── aula 3: o bônus da campanha guardado à parte ─────────────
++
++    [Fact]
++    public async Task The_campaign_bonus_is_kept_apart_from_the_base_cashback()
++    {
++        _flags.Flags["black-friday"] = new("black-friday", "Black Friday", FlagState.On,
++            [], null, null, null, null);
++        var useCase = new RegisterPurchaseUseCase(
++            new CashbackCalculator([new CategoryRule(), new SupermarketDoubleCampaign(), new BlackFridayCampaign()]),
++            _accounts, new FakeStoreRepository(), _purchases, _idempotency, _flags, _notifier, _clock);
++
++        var response = (await useCase.Execute(
++            new RequestRegisterPurchaseJson { CustomerId = "c-001", StoreId = "s-mercado", Amount = 100m })).Response;
++
++        Assert.Equal(9m, response.Cashback);          // 2% + 2% + 5%
++        Assert.Equal(5m, response.CampaignBonus);
++        Assert.Equal(4m, _purchases.Added.Single().CashbackBase);
++    }
++
+     // ───────────── aula 2: idempotência ─────────────
+ 
+     [Fact]
+diff --git a/db/migracoes/002-expandir-cashback-por-origem.sql b/db/migracoes/002-expandir-cashback-por-origem.sql
+new file mode 100644
+index 0000000..a3d9aa7
+--- /dev/null
++++ b/db/migracoes/002-expandir-cashback-por-origem.sql
+@@ -0,0 +1,9 @@
++-- Aula 3 · EXPANDIR (expand/contract): o cashback passa a ser guardado em duas partes, o base e o bônus da campanha.
++-- As colunas novas entram ao lado da antiga (cashback, o total), anuláveis e sem default:
++--   · a versão em produção (que não conhece as colunas novas) continua funcionando: ela nem as vê;
++--   · a versão nova escreve nas três e ainda lê da antiga;
++--   · voltar para a versão anterior (rollback) é seguro: nada que ela lê mudou.
++-- No PostgreSQL 11+, ADD COLUMN sem default não reescreve a tabela (é só metadado).
++-- A coluna antiga só sai na contração (004), quando nenhuma versão no ar a usar mais.
++ALTER TABLE purchases ADD COLUMN cashback_base numeric(12, 2);
++ALTER TABLE purchases ADD COLUMN campaign_bonus numeric(12, 2);
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 4562ddc..cae7dc9 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -1,8 +1,8 @@
+ # Sobe o banco (com as tabelas e os dados de exemplo) e o painel.
+ # A API Clean roda na sua máquina (./rodar-apis.sh, com dotnet watch), para dar para alterar o código ao vivo.
+-#   docker compose up -d      → banco em localhost:5433 · painel em http://localhost:8080
++#   docker compose up -d      → banco em localhost:5433 · painel em http://localhost:8080 · gateway em localhost:5100
+ #   ./reset.sh                → volta o banco ao estado inicial
+-# As portas podem mudar por variável de ambiente (CASHBACK_PORTA_BANCO, CASHBACK_PORTA_PAINEL),
++# As portas podem mudar por variável de ambiente (CASHBACK_PORTA_BANCO, CASHBACK_PORTA_PAINEL, CASHBACK_PORTA_GATEWAY),
+ # por exemplo para ensaiar a aula numa cópia sem derrubar o ambiente de sempre.
+ name: cashback
+ 
+@@ -28,3 +28,14 @@ services:
+       - "${CASHBACK_PORTA_PAINEL:-8080}:80"
+     volumes:
+       - ./painel:/usr/share/nginx/html:ro
++
++  # Aula 3 · o gateway na frente da API: divide o tráfego entre a versão estável e o canário.
++  # A divisão está em nginx/canario.conf, escrita pelo ./canario.sh (ex.: ./canario.sh 10).
++  gateway:
++    image: nginx:alpine
++    ports:
++      - "${CASHBACK_PORTA_GATEWAY:-5100}:80"
++    volumes:
++      - ./nginx:/etc/nginx/conf.d:ro
++    # A API roda na máquina, fora do Docker: o nginx a encontra em host.docker.internal (Docker Desktop, Mac e Windows).
++    # No Linux, acrescente  extra_hosts: ["host.docker.internal:host-gateway"]  e confira que o nome resolve só para IPv4.
+diff --git a/nginx/canario.conf b/nginx/canario.conf
+new file mode 100644
+index 0000000..5969ee7
+--- /dev/null
++++ b/nginx/canario.conf
+@@ -0,0 +1,17 @@
++# Escrito pelo ./canario.sh: canário com 0% do tráfego, estável com 100%.
++# A API roda na máquina (host.docker.internal). Só IPv4: o endereço IPv6 que o Docker também devolve não responde.
++resolver 127.0.0.11 ipv6=off valid=30s;
++
++upstream api {
++    zone api 64k;                 # a contagem é uma só para todos os workers do nginx: 10% é 1 em cada 10
++    server host.docker.internal:5104 weight=100 resolve;   # estável
++    server host.docker.internal:5105 down resolve;   # canário
++}
++
++server {
++    listen 80;
++    location / {
++        proxy_pass http://api;
++        proxy_next_upstream off;  # erro no canário aparece como erro; não é escondido mandando de novo para a estável
++    }
++}
+diff --git a/painel/app.js b/painel/app.js
+index cfb9757..6b00610 100644
+--- a/painel/app.js
++++ b/painel/app.js
+@@ -1,8 +1,10 @@
+ // Painel do curso: chama a API do app de cashback direto do navegador.
+ // Da aula 2 em diante, só a API Clean (o projeto que evolui).
+ // Aba "App": o que o usuário do app vê. Aba "Loja parceira": o HTTP como ele é (método, headers, status, corpo).
++// Aula 3: o painel fala com o gateway (:5100), que divide o tráfego entre a versão estável e o canário.
+ // A porta pode vir no endereço (?api=5204), para ensaiar numa cópia com outras portas.
+-const API = { nome: 'Clean', porta: Number(new URLSearchParams(location.search).get('api') ?? 5104) };
++const API = { nome: 'gateway', porta: Number(new URLSearchParams(location.search).get('api') ?? 5100) };
++const VERSOES = { estavel: 'estável', canario: 'canário', local: 'local' };
+ 
+ const CATEGORIAS = { supermarket: 'Supermercado', fuel: 'Combustível', pharmacy: 'Farmácia', books: 'Livraria' };
+ 
+@@ -24,7 +26,9 @@ async function chamar(api, metodo, caminho, corpo) {
+       body: corpo ? JSON.stringify(corpo) : undefined,
+     });
+     const texto = await r.text();
+-    return { ok: r.ok, status: r.status, dados: texto ? JSON.parse(texto) : null };
++    let dados = null;
++    try { dados = texto ? JSON.parse(texto) : null; } catch { /* o gateway responde HTML quando a versão está fora do ar */ }
++    return { ok: r.ok, status: r.status, dados, versao: r.headers.get('X-Versao') };
+   } catch {
+     return { ok: false, status: 0, dados: null };
+   }
+@@ -38,7 +42,7 @@ const erroTexto = (res) =>
+ // ───────────── status da API ─────────────
+ async function atualizarStatus() {
+   const res = await chamar(API, 'GET', '/stores');
+-  $('#status').innerHTML = `<li class="${res.ok ? 'on' : 'off'}" title="localhost:${API.porta}">API ${API.nome}</li>`;
++  $('#status').innerHTML = `<li class="${res.ok ? 'on' : 'off'}" title="localhost:${API.porta}">API Clean via ${API.nome} :${API.porta}</li>`;
+   return res.ok;
+ }
+ 
+@@ -108,9 +112,11 @@ $('#form-compra').onsubmit = async (e) => {
+       <div class="ok">
+         <div><small>categoria</small><strong>${CATEGORIAS[res.dados.category] ?? res.dados.category}</strong></div>
+         <div><small>percentual</small><strong>${pct(res.dados.percentage)}</strong></div>
+-        <div><small>cashback creditado</small><strong class="destaque">${real(res.dados.cashback)}</strong></div>
++        <div><small>cashback creditado</small><strong class="destaque">${real(res.dados.cashback)}</strong>
++          ${res.dados.campaignBonus ? `<small>inclui ${real(res.dados.campaignBonus)} da Black Friday</small>` : ''}</div>
+         <div><small>saldo agora</small><strong>${real(res.dados.balance)}</strong></div>
+-      </div>` : `<p class="erro">${erroTexto(res)}</p>`;
++        <div><small>quem atendeu</small><strong class="versao ${res.versao}">${VERSOES[res.versao] ?? res.versao ?? '?'}</strong></div>
++      </div>` : `<p class="erro">${erroTexto(res)}${res.versao ? ` · versão ${VERSOES[res.versao] ?? res.versao}` : ''}</p>`;
+   clienteExtrato = corpo.customerId;
+   carregarApp();
+ };
+@@ -260,6 +266,29 @@ async function carregarFlags() {
+   });
+ }
+ 
++// ───────────── aba "Operação" (aula 3): o canário ─────────────
++// Uma rajada de compras iguais pelo gateway: quantas cada versão atendeu, quantas deram erro e o percentual de cada uma.
++$('#form-rajada').onsubmit = async (e) => {
++  e.preventDefault();
++  const f = new FormData(e.target);
++  const corpo = { customerId: f.get('cliente'), storeId: f.get('loja'), amount: Number(f.get('valor')) };
++  const contagem = {};
++  $('#rajada-resultado').innerHTML = '<p class="vazio">Enviando...</p>';
++  for (let i = 0; i < Number(f.get('quantas')); i++) {
++    const res = await chamar(API, 'POST', '/purchases', corpo);
++    const v = res.versao ?? (res.status === 0 ? 'fora do ar' : 'sem versão');
++    const c = contagem[v] ??= { total: 0, erros: 0, pcts: new Set() };
++    c.total++;
++    if (res.ok) c.pcts.add(pct(res.dados.percentage)); else c.erros++;
++  }
++  $('#rajada-resultado').innerHTML = `<table class="tabela">
++      <thead><tr><th>Versão</th><th class="num">Respostas</th><th class="num">Erros</th><th>Percentual dado</th></tr></thead>
++      <tbody>${Object.entries(contagem).map(([v, c]) => `<tr><td><strong class="versao ${v}">${VERSOES[v] ?? v}</strong></td>
++        <td class="num">${c.total}</td><td class="num ${c.erros ? 'erro' : ''}">${c.erros}</td><td>${[...c.pcts].join(', ') || '—'}</td></tr>`).join('')}
++      </tbody></table>`;
++  carregarApp();
++};
++
+ // ───────────── relógio do app (aula 3) ─────────────
+ // A API diz que horas são para ela; o painel faz o relógio andar entre uma consulta e outra.
+ let relogio = null; // { app: hora do app, local: hora do navegador na consulta, ajustado }
+diff --git a/painel/index.html b/painel/index.html
+index 70f4351..2c35b3b 100644
+--- a/painel/index.html
++++ b/painel/index.html
+@@ -12,7 +12,7 @@
+       <span class="logo">%</span>
+       <div>
+         <h1>Cashback</h1>
+-        <p>app de cashback · API Clean (:5104)</p>
++        <p>app de cashback · API Clean via gateway (:5100)</p>
+       </div>
+     </div>
+     <nav class="abas" role="tablist">
+@@ -134,6 +134,18 @@
+         <h2>Feature flags</h2>
+         <div id="flags" class="flags"></div>
+       </section>
++
++      <section class="cartao largo">
++        <h2>Canário <small>a fatia muda no terminal: <code>./canario.sh 50</code> · <code>./canario.sh 0</code> é o rollback</small></h2>
++        <form id="form-rajada" class="form linha-rajada">
++          <label>Cliente <select name="cliente" class="sel-cliente"></select></label>
++          <label>Loja parceira <select name="loja" class="sel-loja"></select></label>
++          <label>Valor (R$) <input name="valor" type="number" min="0" step="0.01" value="5"></label>
++          <label>Compras <input name="quantas" type="number" min="1" max="100" value="20"></label>
++          <button type="submit">Enviar a rajada</button>
++        </form>
++        <div id="rajada-resultado" class="resultado"></div>
++      </section>
+     </div>
+   </main>
+ 
+diff --git a/painel/style.css b/painel/style.css
+index 437af64..6b5857a 100644
+--- a/painel/style.css
++++ b/painel/style.css
+@@ -160,3 +160,8 @@ button, input, select, textarea { font: inherit; }
+ .publico.everyone { color: var(--verde); }
+ .publico.test-group { color: #b45309; }
+ .publico.none { color: var(--mudo); }
++.linha-rajada { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
++.linha-rajada label { flex: 1 1 140px; }
++.versao { padding: 2px 10px; border-radius: 999px; background: var(--linha); }
++.versao.estavel { background: var(--verde-claro); color: var(--verde); }
++.versao.canario { background: #fef3c7; color: #b45309; }

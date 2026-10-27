@@ -18,7 +18,7 @@ public class ListPurchasesUseCase(IAccountRepository accountRepository, IPurchas
 
         var purchases = await purchaseRepository.ListByCustomer(customerId);
         return purchases
-            .Select(p => new ResponsePurchaseJson(p.Id, p.StoreName, p.Amount, p.Percentage, p.Cashback, p.CreatedAt, p.CampaignBonus))
+            .Select(p => new ResponsePurchaseJson(p.Id, p.StoreName, p.Amount, p.Percentage, p.Cashback, p.CreatedAt))
             .ToList();
     }
 }

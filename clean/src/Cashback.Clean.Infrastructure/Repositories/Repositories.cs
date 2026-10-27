@@ -27,11 +27,9 @@ public class PurchaseRepository(PostgresConnection db) : IPurchaseRepository
         await using var conn = db.Open();
         await conn.ExecuteAsync(
             """
-            INSERT INTO purchases (id, customer_id, store_id, amount, category, percentage, created_at,
-                                   cashback_base, campaign_bonus)
-            VALUES (@Id, @CustomerId, @StoreId, @Amount, @Category, @Percentage, @CreatedAt,
-                    @CashbackBase, @CampaignBonus)
-            """, purchase); // expand/contract (aula 3): só as colunas novas; a antiga (cashback) sai na migração 004
+            INSERT INTO purchases (id, customer_id, store_id, amount, category, percentage, cashback, created_at)
+            VALUES (@Id, @CustomerId, @StoreId, @Amount, @Category, @Percentage, @Cashback, @CreatedAt)
+            """, purchase);
     }
 
     public async Task<Purchase?> Get(Guid id)
@@ -39,18 +37,18 @@ public class PurchaseRepository(PostgresConnection db) : IPurchaseRepository
         await using var conn = db.Open();
         var row = await conn.QuerySingleOrDefaultAsync<PurchaseRow>(
             """
-            SELECT id, customer_id AS CustomerId, store_id AS StoreId, amount, category, percentage,
-                   cashback_base + campaign_bonus AS Cashback, created_at AS CreatedAt, campaign_bonus AS CampaignBonus
+            SELECT id, customer_id AS CustomerId, store_id AS StoreId, amount, category, percentage, cashback,
+                   created_at AS CreatedAt
             FROM purchases WHERE id = @id
             """, new { id });
         return row?.ToEntity();
     }
 
     private record PurchaseRow(Guid Id, string CustomerId, string StoreId, decimal Amount, string Category,
-        decimal Percentage, decimal Cashback, DateTime CreatedAt, decimal CampaignBonus)
+        decimal Percentage, decimal Cashback, DateTime CreatedAt)
     {
         public Purchase ToEntity() => new(Id, CustomerId, StoreId, Amount, Category, Percentage, Cashback,
-            new DateTimeOffset(DateTime.SpecifyKind(CreatedAt, DateTimeKind.Utc)), CampaignBonus);
+            new DateTimeOffset(DateTime.SpecifyKind(CreatedAt, DateTimeKind.Utc)));
     }
 
     public async Task<IList<PurchaseSummary>> ListByCustomer(string customerId)
@@ -58,8 +56,7 @@ public class PurchaseRepository(PostgresConnection db) : IPurchaseRepository
         await using var conn = db.Open();
         var rows = await conn.QueryAsync<PurchaseSummary>(
             """
-            SELECT p.id, s.name AS StoreName, p.amount, p.percentage, p.cashback_base + p.campaign_bonus AS Cashback,
-                   p.created_at AS CreatedAt, p.campaign_bonus AS CampaignBonus
+            SELECT p.id, s.name AS StoreName, p.amount, p.percentage, p.cashback, p.created_at AS CreatedAt
             FROM purchases p JOIN stores s ON s.id = p.store_id
             WHERE p.customer_id = @customerId ORDER BY p.created_at DESC LIMIT 10
             """, new { customerId });

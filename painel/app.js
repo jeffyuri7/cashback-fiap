@@ -1,10 +1,8 @@
 // Painel do curso: chama a API do app de cashback direto do navegador.
 // Da aula 2 em diante, só a API Clean (o projeto que evolui).
 // Aba "App": o que o usuário do app vê. Aba "Loja parceira": o HTTP como ele é (método, headers, status, corpo).
-// Aula 3: o painel fala com o gateway (:5100), que divide o tráfego entre a versão estável e o canário.
 // A porta pode vir no endereço (?api=5204), para ensaiar numa cópia com outras portas.
-const API = { nome: 'gateway', porta: Number(new URLSearchParams(location.search).get('api') ?? 5100) };
-const VERSOES = { estavel: 'estável', canario: 'canário', local: 'local' };
+const API = { nome: 'Clean', porta: Number(new URLSearchParams(location.search).get('api') ?? 5104) };
 
 const CATEGORIAS = { supermarket: 'Supermercado', fuel: 'Combustível', pharmacy: 'Farmácia', books: 'Livraria' };
 
@@ -26,9 +24,7 @@ async function chamar(api, metodo, caminho, corpo) {
       body: corpo ? JSON.stringify(corpo) : undefined,
     });
     const texto = await r.text();
-    let dados = null;
-    try { dados = texto ? JSON.parse(texto) : null; } catch { /* o gateway responde HTML quando a versão está fora do ar */ }
-    return { ok: r.ok, status: r.status, dados, versao: r.headers.get('X-Versao') };
+    return { ok: r.ok, status: r.status, dados: texto ? JSON.parse(texto) : null };
   } catch {
     return { ok: false, status: 0, dados: null };
   }
@@ -42,7 +38,7 @@ const erroTexto = (res) =>
 // ───────────── status da API ─────────────
 async function atualizarStatus() {
   const res = await chamar(API, 'GET', '/stores');
-  $('#status').innerHTML = `<li class="${res.ok ? 'on' : 'off'}" title="localhost:${API.porta}">API Clean via ${API.nome} :${API.porta}</li>`;
+  $('#status').innerHTML = `<li class="${res.ok ? 'on' : 'off'}" title="localhost:${API.porta}">API ${API.nome}</li>`;
   return res.ok;
 }
 
@@ -95,13 +91,12 @@ async function carregarExtrato() {
   const nome = clientes.find((c) => c.id === clienteExtrato)?.name ?? clienteExtrato;
   $('#extrato-quem').textContent = `· ${nome}`;
   const res = await chamar(API, 'GET', `/customers/${clienteExtrato}/purchases`);
-  $('#extrato').innerHTML = !res.ok ? `<tr><td colspan="6" class="erro">${erroTexto(res)}</td></tr>` :
-    res.dados.length === 0 ? '<tr><td colspan="6" class="vazio">Nenhuma compra ainda.</td></tr>' :
+  $('#extrato').innerHTML = !res.ok ? `<tr><td colspan="5" class="erro">${erroTexto(res)}</td></tr>` :
+    res.dados.length === 0 ? '<tr><td colspan="5" class="vazio">Nenhuma compra ainda.</td></tr>' :
     res.dados.map((p) => `<tr>
         <td>${new Date(p.createdAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' })}</td>
         <td>${esc(p.storeName)}</td><td class="num">${real(p.amount)}</td>
-        <td class="num">${pct(p.percentage)}</td><td class="num forte">${real(p.cashback)}</td>
-        <td class="num">${p.campaignBonus ? real(p.campaignBonus) : '—'}</td></tr>`).join('');
+        <td class="num">${pct(p.percentage)}</td><td class="num forte">${real(p.cashback)}</td></tr>`).join('');
 }
 
 $('#form-compra').onsubmit = async (e) => {
@@ -113,11 +108,9 @@ $('#form-compra').onsubmit = async (e) => {
       <div class="ok">
         <div><small>categoria</small><strong>${CATEGORIAS[res.dados.category] ?? res.dados.category}</strong></div>
         <div><small>percentual</small><strong>${pct(res.dados.percentage)}</strong></div>
-        <div><small>cashback creditado</small><strong class="destaque">${real(res.dados.cashback)}</strong>
-          ${res.dados.campaignBonus ? `<small>inclui ${real(res.dados.campaignBonus)} da Black Friday</small>` : ''}</div>
+        <div><small>cashback creditado</small><strong class="destaque">${real(res.dados.cashback)}</strong></div>
         <div><small>saldo agora</small><strong>${real(res.dados.balance)}</strong></div>
-        <div><small>quem atendeu</small><strong class="versao ${res.versao}">${VERSOES[res.versao] ?? res.versao ?? '?'}</strong></div>
-      </div>` : `<p class="erro">${erroTexto(res)}${res.versao ? ` · versão ${VERSOES[res.versao] ?? res.versao}` : ''}</p>`;
+      </div>` : `<p class="erro">${erroTexto(res)}</p>`;
   clienteExtrato = corpo.customerId;
   carregarApp();
 };
@@ -217,79 +210,13 @@ async function carregarExtratoLoja() {
   const [compras, saldo] = await Promise.all([
     chamar(API, 'GET', `/customers/${id}/purchases`), chamar(API, 'GET', `/customers/${id}/balance`)]);
   $('#loja-quem').textContent = `· ${nome}${saldo.ok ? ` · saldo ${real(saldo.dados.balance)}` : ''}`;
-  $('#loja-extrato').innerHTML = !compras.ok ? `<tr><td colspan="6" class="erro">${erroTexto(compras)}</td></tr>` :
-    compras.dados.length === 0 ? '<tr><td colspan="6" class="vazio">Nenhuma compra ainda.</td></tr>' :
+  $('#loja-extrato').innerHTML = !compras.ok ? `<tr><td colspan="5" class="erro">${erroTexto(compras)}</td></tr>` :
+    compras.dados.length === 0 ? '<tr><td colspan="5" class="vazio">Nenhuma compra ainda.</td></tr>' :
     compras.dados.map((p) => `<tr>
         <td>${new Date(p.createdAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' })}</td>
         <td>${esc(p.storeName)}</td><td class="num">${real(p.amount)}</td>
-        <td class="num">${pct(p.percentage)}</td><td class="num forte">${real(p.cashback)}</td>
-        <td class="num">${p.campaignBonus ? real(p.campaignBonus) : '—'}</td></tr>`).join('');
+        <td class="num">${pct(p.percentage)}</td><td class="num forte">${real(p.cashback)}</td></tr>`).join('');
 }
-
-// ───────────── aba "Operação" (aula 3): feature flags ─────────────
-const ESTADOS = [
-  { valor: 'off', rotulo: 'Desligada' },
-  { valor: 'test', rotulo: 'Grupo de teste' },
-  { valor: 'on', rotulo: 'Todos, no horário' },
-];
-const PUBLICO = { none: 'ninguém', 'test-group': 'só o grupo de teste', everyone: 'todos' };
-const dataHora = (iso) => new Date(iso).toLocaleString('pt-BR', { ...HORA, second: undefined });
-
-async function carregarFlags() {
-  const res = await chamar(API, 'GET', '/feature-flags');
-  const caixa = $('#flags');
-  if (!res.ok) {
-    caixa.innerHTML = `<p class="erro">${res.status === 404 ? 'Esta versão da API ainda não tem feature flags.' : erroTexto(res)}</p>`;
-    return;
-  }
-  caixa.innerHTML = res.dados.map((f) => {
-    const grupo = f.testCustomers.map((id) => clientes.find((c) => c.id === id)?.name ?? id).join(', ');
-    // o fim é exclusivo (00h00 de segunda); para ler, mostra o último minuto da campanha
-    const fim = f.endsAt ? dataHora(new Date(new Date(f.endsAt).getTime() - 60000)) : 'sem fim';
-    return `<div class="flag">
-        <div class="flag-nome"><code>${esc(f.name)}</code><span>${esc(f.description)}</span></div>
-        <div class="flag-estados" role="group">${ESTADOS.map((e) =>
-          `<button data-flag="${esc(f.name)}" data-estado="${e.valor}" class="${f.state === e.valor ? 'ativo' : ''}">${e.rotulo}</button>`).join('')}
-        </div>
-        <dl class="flag-dados">
-          <dt>Vale agora para</dt><dd class="publico ${f.audienceNow}">${PUBLICO[f.audienceNow]}</dd>
-          <dt>Horário (todos)</dt><dd>${f.startsAt ? dataHora(f.startsAt) : 'sem início'} → ${fim}</dd>
-          <dt>Grupo de teste</dt><dd>${esc(grupo || 'ninguém')}</dd>
-          <dt>Última mudança</dt><dd>${f.changedAt ? `${esc(f.changedBy)}, ${dataHora(f.changedAt)}` : 'nunca mudou'}</dd>
-        </dl>
-      </div>`;
-  }).join('');
-  $$('#flags [data-estado]').forEach((b) => b.onclick = async () => {
-    await fetch(`http://localhost:${API.porta}/feature-flags/${b.dataset.flag}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Operador': 'painel' },
-      body: JSON.stringify({ state: b.dataset.estado }),
-    }).catch(() => null);
-    carregarFlags();
-  });
-}
-
-// ───────────── aba "Operação" (aula 3): o canário ─────────────
-// Uma rajada de compras iguais pelo gateway: quantas cada versão atendeu, quantas deram erro e o percentual de cada uma.
-$('#form-rajada').onsubmit = async (e) => {
-  e.preventDefault();
-  const f = new FormData(e.target);
-  const corpo = { customerId: f.get('cliente'), storeId: f.get('loja'), amount: Number(f.get('valor')) };
-  const contagem = {};
-  $('#rajada-resultado').innerHTML = '<p class="vazio">Enviando...</p>';
-  for (let i = 0; i < Number(f.get('quantas')); i++) {
-    const res = await chamar(API, 'POST', '/purchases', corpo);
-    const v = res.versao ?? (res.status === 0 ? 'fora do ar' : 'sem versão');
-    const c = contagem[v] ??= { total: 0, erros: 0, pcts: new Set() };
-    c.total++;
-    if (res.ok) c.pcts.add(pct(res.dados.percentage)); else c.erros++;
-  }
-  $('#rajada-resultado').innerHTML = `<table class="tabela">
-      <thead><tr><th>Versão</th><th class="num">Respostas</th><th class="num">Erros</th><th>Percentual dado</th></tr></thead>
-      <tbody>${Object.entries(contagem).map(([v, c]) => `<tr><td><strong class="versao ${v}">${VERSOES[v] ?? v}</strong></td>
-        <td class="num">${c.total}</td><td class="num ${c.erros ? 'erro' : ''}">${c.erros}</td><td>${[...c.pcts].join(', ') || '—'}</td></tr>`).join('')}
-      </tbody></table>`;
-  carregarApp();
-};
 
 // ───────────── relógio do app (aula 3) ─────────────
 // A API diz que horas são para ela; o painel faz o relógio andar entre uma consulta e outra.
@@ -316,7 +243,6 @@ $('#relogio-pular').onchange = async (e) => {
   await (alvo ? chamar(API, 'PUT', '/demo/clock', { now: alvo }) : chamar(API, 'DELETE', '/demo/clock'));
   await lerRelogio();
   carregarApp();
-  if (!$('#aba-operacao').classList.contains('escondido')) carregarFlags();
 };
 setInterval(desenharRelogio, 1000);
 
@@ -325,9 +251,7 @@ $$('.aba').forEach((b) => b.onclick = () => {
   $$('.aba').forEach((x) => x.classList.toggle('ativa', x === b));
   $('#aba-app').classList.toggle('escondido', b.dataset.aba !== 'app');
   $('#aba-loja').classList.toggle('escondido', b.dataset.aba !== 'loja');
-  $('#aba-operacao').classList.toggle('escondido', b.dataset.aba !== 'operacao');
   if (b.dataset.aba === 'app') carregarApp();
-  else if (b.dataset.aba === 'operacao') carregarFlags();
   else { if (!campo('corpo').value) montarCorpo(); carregarExtratoLoja(); }
 });
 

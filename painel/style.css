@@ -142,26 +142,3 @@ button, input, select, textarea { font: inherit; }
 
 @media (max-width: 1000px) {
   .grade, }
-
-/* aula 3: aba Operação */
-.flags { display: flex; flex-direction: column; gap: 16px; }
-.flag { display: grid; grid-template-columns: 1fr auto; gap: 12px 24px; align-items: center;
-  border: 1px solid var(--linha); border-radius: 12px; padding: 14px 16px; }
-.flag-nome { display: flex; flex-direction: column; gap: 2px; }
-.flag-nome code { font-size: 16px; font-weight: 700; }
-.flag-nome span { color: var(--mudo); font-size: 14px; }
-.flag-estados { display: flex; gap: 6px; }
-.flag-estados button { border: 2px solid var(--linha); background: #fff; border-radius: 999px; padding: 6px 14px; cursor: pointer; }
-.flag-estados button.ativo { border-color: var(--roxo); background: var(--roxo); color: #fff; font-weight: 700; }
-.flag-dados { grid-column: 1 / -1; display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 14px; }
-.flag-dados dt { color: var(--mudo); }
-.flag-dados dd { margin: 0; }
-.publico { font-weight: 700; }
-.publico.everyone { color: var(--verde); }
-.publico.test-group { color: #b45309; }
-.publico.none { color: var(--mudo); }
-.linha-rajada { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
-.linha-rajada label { flex: 1 1 140px; }
-.versao { padding: 2px 10px; border-radius: 999px; background: var(--linha); }
-.versao.estavel { background: var(--verde-claro); color: var(--verde); }
-.versao.canario { background: #fef3c7; color: #b45309; }

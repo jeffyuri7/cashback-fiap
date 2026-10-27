@@ -98,7 +98,7 @@ Content-Type: application/json
 ### Voltar para a hora real
 DELETE http://localhost:5104/demo/clock
 
-### Feature flags (aula 3)
+### Feature flags (patch 1 em diante)
 GET http://localhost:5104/feature-flags
 
 ### Ligar a Black Friday só para o grupo de teste (off · test · on)
@@ -108,7 +108,7 @@ X-Operador: aluno
 
 { "state": "test" }
 
-### Pelo gateway, com o canário no ar (./canario.sh subir): veja o header X-Versao
+### Pelo gateway, com o canário no ar (patch 2 em diante): veja o header X-Versao
 POST http://localhost:5100/purchases
 Content-Type: application/json
 

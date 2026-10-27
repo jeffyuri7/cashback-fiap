@@ -1,28 +1,58 @@
 # App de cashback · FIAP · Arquitetura e Desenvolvimento de Software
 
-O app de cashback que evolui aula a aula no curso. Este repositório traz o código **no fim da aula 3** (DevOps como elemento arquitetural): a API Clean, o painel, o banco, o pipeline no GitHub Actions, a campanha de Black Friday atrás de uma feature flag, o canário e as migrações por expandir, migrar e contrair.
+O app de cashback que evolui aula a aula no curso. Este repositório traz o código **no início da aula 3** (DevOps como elemento arquitetural), com tudo o que é preciso para refazer, na sua máquina, as mudanças feitas ao vivo na aula: o pipeline barrando uma mudança, a campanha de Black Friday atrás de uma feature flag, a correção subindo por canário e a mudança no banco por expandir, migrar e contrair.
 
 Todos os dados são fictícios (3 clientes e 4 lojas de exemplo).
 
 ## Começando
 
-1. Clique em **Use this template → Create a new repository** para ter uma cópia sua (pública ou privada). Assim o GitHub Actions já vem ligado e o pipeline roda no seu repositório.
-2. Clone a sua cópia e instale **Docker** e o **.NET 10 SDK**.
+**1. A sua cópia.** Clique em **Use this template → Create a new repository** (pública ou privada). Assim o GitHub Actions roda no **seu** repositório, e você pode mandar push à vontade. Depois, clone a sua cópia.
+
+**2. O que instalar:**
+
+| Ferramenta | Para quê | Conferir |
+|---|---|---|
+| **Docker** (Docker Desktop no Mac e no Windows) | o banco, o painel e o gateway do canário | `docker info` |
+| **.NET 10 SDK** | a API Clean | `dotnet --version` (10.x) |
+| **git** e um terminal **bash** | os scripts (`.sh`) | `bash --version` |
+| GitHub CLI (`gh`), opcional | mostrar o número do run nos cenários do pipeline | `gh auth status` |
+
+- **Mac e Linux:** o terminal de sempre.
+- **Windows:** use o **WSL 2** (Ubuntu), com o Docker Desktop integrado ao WSL (*Settings → Resources → WSL integration*), e clone o repositório **dentro** do WSL. Os scripts usam ferramentas do Linux (`lsof`, `pgrep`) que o Git Bash não tem.
+- **Linux, só no canário:** o gateway encontra a API em `host.docker.internal`, que o Docker Desktop cria sozinho. No Docker Engine do Linux, veja o comentário no `docker-compose.yml` (aparece no patch 2).
+
+**3. Subir o app:**
 
 ```bash
-docker compose up -d --wait   # banco (localhost:5433) com as tabelas e os dados de exemplo + painel (http://localhost:8080) + gateway (:5100)
-./migrar.sh                   # aplica as migrações do banco (db/migracoes, 001 a 004): a API deste ponto precisa delas
-./rodar-apis.sh               # a API Clean com dotnet watch (alterou, recompilou); Ctrl+C para parar
+./subir.sh
 ```
 
-- **Painel:** `http://localhost:8080`, em três abas:
-  - **App:** clientes com saldo e teto do mês, nova compra numa loja parceira (com o percentual e o cashback calculados), resgate via PIX e extrato;
-  - **Loja parceira (HTTP):** a requisição como o sistema da loja a envia (versão do contrato, corpo editável, `Idempotency-Key`, timeout simulado, retry) e a resposta com status e headers;
-  - **Operação:** as feature flags, ligadas e desligadas sem deploy.
-- **Voltar ao início:** `./reset.sh` (recria as tabelas, os dados de exemplo e aplica as migrações). Reinicie também a API (Ctrl+C e `./rodar-apis.sh`), para zerar qualquer estado guardado em memória.
-- **No Rider ou no Visual Studio:** `clean/Cashback.Clean.sln`.
-- **Requisições prontas:** `requests.http` (a API Clean é a porta 5104).
+O script sobe o **banco** (PostgreSQL, `localhost:5433`) e o **painel** (`http://localhost:8080`) no Docker, aplica as migrações pendentes e roda a **API Clean** (`localhost:5104`) com `dotnet watch`: alterou o código, ela recompila sozinha. Deixe esse terminal aberto. Ctrl+C para a API; o banco e o painel continuam no Docker (para desligar: `docker compose down`).
+
+Se preferir os passos separados:
+
+```bash
+docker compose up -d --wait   # banco + painel
+./rodar-apis.sh               # a API Clean
+```
+
+**4. Abrir o painel:** `http://localhost:8080`. No topo, o indicador da API fica verde quando ela responde. São as abas:
+- **App:** clientes com saldo e teto do mês, nova compra numa loja parceira (com o percentual e o cashback calculados), resgate via PIX e extrato;
+- **Loja parceira (HTTP):** a requisição como o sistema da loja a envia (versão do contrato, corpo editável, `Idempotency-Key`, timeout simulado, retry) e a resposta com status e headers;
+- **Operação** (depois do patch 1 da aula 3): as feature flags, ligadas e desligadas sem deploy.
+
+**5. Refazer a aula 3:** siga o [guia da aula 3](mudanca-black-friday/README.md).
+
+### Outros comandos
+
 - **Testes** (a regra testada sem banco): `dotnet test clean`.
+- **Banco de volta aos dados de exemplo:** `./reset.sh`. Reinicie também a API (Ctrl+C e `./rodar-apis.sh`).
+- **Migrações:** `./migrar.sh` aplica as pendentes; `./migrar.sh status` mostra o que já foi aplicado.
+- **Pipeline sem GitHub:** `./scripts/pipeline-local.sh` (build, testes, scan, migrações num banco de teste e o pacote).
+- **No Rider, no Visual Studio ou no VS Code:** `clean/Cashback.Clean.sln`.
+- **Requisições prontas:** `requests.http` (a API Clean é a porta 5104).
+- **Olhar o banco** (DBeaver, extensão do VS Code etc.): `localhost:5433`, banco `cashback`, usuário `cashback`, senha `cashback` (só de demonstração local), schema `clean`.
+- **Portas ocupadas?** Mude com `CASHBACK_PORTA_BANCO`, `CASHBACK_PORTA_PAINEL`, `CASHBACK_PORTA_GATEWAY` e `CASHBACK_PORTA_API` (junto com `COMPOSE_PROJECT_NAME`); o painel aceita `?api=<porta>` no endereço.
 
 ## O app
 
@@ -31,9 +61,10 @@ docker compose up -d --wait   # banco (localhost:5433) com as tabelas e os dados
   - combustível 3%;
   - demais 1%;
   - farmácia +5% até o fim de 2026 (a campanha da aula 1);
-  - Black Friday (aula 3): +5% em todas as lojas, menos combustível, só com a flag ligada.
+  - Black Friday (aula 3, depois do patch 1): +5% em todas as lojas, menos combustível, só com a flag ligada.
 - **Teto:** R$ 100 de cashback por cliente por mês.
 - **Resgate:** via PIX, para a chave cadastrada; o saldo nunca fica negativo.
+- **Dados de exemplo:** Ana, Bruno e Carla; mercado, posto, farmácia e livraria. A Ana é a funcionária (o grupo de teste da flag).
 
 **Contrato das lojas (aula 2, em `contratos/`, OpenAPI 3.1):**
 
@@ -47,7 +78,7 @@ docker compose up -d --wait   # banco (localhost:5433) com as tabelas e os dados
 | `GET` | `/customers/{id}/balance` | saldo, crédito do mês e teto |
 | `GET` | `/customers/{id}/purchases` | extrato (últimas 10) |
 | `POST` | `/customers/{id}/redemptions` | resgate via PIX (`amount`) |
-| `GET` · `PUT` | `/feature-flags` · `/feature-flags/{nome}` | as flags (aula 3); o `PUT` recebe `{ "state": "off" \| "test" \| "on" }` |
+| `GET` · `PUT` | `/feature-flags` · `/feature-flags/{nome}` | as flags (aula 3, depois do patch 1); o `PUT` recebe `{ "state": "off" \| "test" \| "on" }` |
 
 Erros: `400` com `{ "errors": [...] }` (dados inválidos, loja inexistente, saldo insuficiente), `404` sem corpo (cliente inexistente), `409` (repetição enquanto a primeira ainda processa) e `422` (mesma chave com outra compra).
 
@@ -57,22 +88,21 @@ Erros: `400` com `{ "errors": [...] }` (dados inválidos, loja inexistente, sald
 |---|---|
 | `Domain/Entities/CashbackAccount.cs` | a entidade que protege as próprias regras |
 | `Application/UseCases/` | um caso de uso por pasta; as dependências apontando para dentro (Api → Application → Domain; Infrastructure → Application) |
-| `Domain/Rules/` | cada campanha é uma classe; a calculadora soma todas (aberto e fechado / Strategy); a Black Friday diz qual flag a liga |
+| `Domain/Rules/` | cada campanha é uma classe; a calculadora soma todas (aberto e fechado / Strategy) |
 | `Application/DependencyInjectionExtension.cs` | injeção de dependência e tempos de vida |
-| `tests/` | repositórios falsos e um relógio fixo (`TimeProvider`): a regra testada sem banco, com a flag ligada e desligada |
+| `tests/` | repositórios falsos e um relógio fixo (`TimeProvider`): a regra testada sem banco |
+| `.github/workflows/` | o `pipeline` (a cada push) e o `promover` (o portão humano) |
+| `db/migracoes/` | as mudanças de esquema, aplicadas pelo `./migrar.sh` numa etapa própria |
 
 O banco é um PostgreSQL só (`db/`). A API Clean usa o schema `clean`; o script ainda cria os schemas das outras três APIs da aula 1 (big ball of mud, camadas e hexagonal), que ninguém mais usa.
 
-## Aula 3 · A Black Friday: pipeline, flag, canário e banco
+## Aula 3 · O que já está aqui e o que vem nos patches
 
-O requisito: a campanha entra na sexta 27/11 às 00h e sai no domingo 29/11 às 23h59, **sem deploy de madrugada**, e **pode ser desligada** se der problema.
+**Já está no código (o início da aula):**
+- o **pipeline** (`.github/workflows/pipeline.yml`): roda a cada push, em qualquer branch; build e testes, scan de dependências, migrações num banco de teste e o pacote, gerado uma vez. Veja na aba **Actions** do seu repositório;
+- o **promover** (`.github/workflows/promover.yml`): em **Actions → promover → Run workflow**, informe o número do run e o ambiente. Ele leva **o pacote daquele run**, sem compilar de novo. O deploy em si é simulado, porque a API roda na sua máquina;
+- o `./migrar.sh` e a pasta `db/migracoes/`;
+- o **relógio da demonstração**: no topo do painel, "pular para" quinta 17h, sexta 00h40, sábado 10h... A API usa essa hora (guardada no arquivo `.relogio`). Para voltar, escolha **hora real**;
+- o header `X-Versao` em toda resposta, para saber qual versão atendeu.
 
-- **Pipeline** (`.github/workflows/`):
-  - `pipeline` roda a cada push: build e testes, scan de dependências, migrações num banco de teste e o pacote, gerado uma vez. Veja na aba **Actions** do seu repositório; o número do run aparece no resumo.
-  - `promover` leva **esse** pacote a um ambiente: em **Actions → promover → Run workflow**, informe o número do run e o ambiente. É o portão humano. O deploy em si é simulado, porque a API roda na sua máquina.
-  - Sem internet ou sem GitHub: `./scripts/pipeline-local.sh` roda as mesmas etapas na sua máquina.
-- **Migrações** (`db/migracoes/`): `./migrar.sh` aplica as pendentes, numa etapa própria, antes de subir a versão que precisa delas; `./migrar.sh status` mostra o que já foi aplicado. As quatro migrações contam a história da aula: as flags (001) e o cashback guardado por origem, em três passos: expandir (002), migrar (003) e contrair (004).
-- **Relógio da demonstração:** no topo do painel, "pular para" quinta 17h, sexta 00h40, sábado 10h... A API usa essa hora (guardada no arquivo `.relogio`). Para voltar, escolha **hora real** (ou `DELETE /demo/clock`).
-- **Feature flag `black-friday`** (aba **Operação**): `off` (ninguém), `test` (só o grupo de teste, a Ana, a qualquer hora) e `on` (todos, dentro da janela da campanha). Ela começa desligada.
-- **Canário:** `./canario.sh subir` publica e sobe a **estável** (o último commit, :5104) e o **canário** (o código como está agora, com as suas alterações ainda sem commit, :5105); o **gateway** (nginx, :5100) divide o tráfego. `./canario.sh 50` muda a fatia, e `./canario.sh 0` é o rollback. O painel passa a falar com o gateway, e cada resposta diz quem atendeu (header `X-Versao`). Para ver duas versões diferentes, altere o código antes de subir.
-- **Outras portas** (se a 5433, a 8080 ou a 5104 já estiverem ocupadas): `CASHBACK_PORTA_BANCO`, `CASHBACK_PORTA_PAINEL`, `CASHBACK_PORTA_GATEWAY` e `CASHBACK_PORTA_API`, junto com `COMPOSE_PROJECT_NAME`; o painel aceita `?api=<porta>`.
+**Vem nos patches** (`mudanca-black-friday/`, na ordem da aula): a campanha atrás da flag `black-friday`, a correção da farmácia no **canário** (`./canario.sh`, com o gateway nginx na porta 5100) e o cashback guardado por origem (expandir, migrar, contrair). Depois dos quatro patches, o código fica como no fim da aula 3.

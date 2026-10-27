@@ -15,7 +15,6 @@ public class RegisterPurchaseUseCase(
     IStoreRepository storeRepository,
     IPurchaseRepository purchaseRepository,
     IIdempotencyStore idempotencyStore,
-    IFeatureFlags featureFlags,
     ICustomerNotifier notifier,
     TimeProvider clock) : IRegisterPurchaseUseCase
 {
@@ -61,22 +60,17 @@ public class RegisterPurchaseUseCase(
             ?? throw new NotFoundException("Cliente não encontrado.");
 
         var now = clock.GetUtcNow();
-        // as flags ligadas para este cliente, agora (aula 3): a regra da Black Friday só entra se a dela estiver ligada
-        var enabledFlags = (await featureFlags.List())
-            .Where(flag => flag.IsEnabledFor(account.Owner.Id, now)).Select(flag => flag.Name).ToHashSet();
-        var quote = calculator.Calculate(request.Amount, store.Category, now, enabledFlags);
+        var quote = calculator.Calculate(request.Amount, store.Category, now);
         var credited = account.Credit(quote.Amount, now);
-        // se o teto do mês cortou o crédito, o corte sai primeiro do bônus da campanha
-        var campaignBonus = credited - Math.Min(quote.Amount - quote.CampaignBonus, credited);
 
         var purchase = new Purchase(Guid.NewGuid(), account.Owner.Id, store.Id, request.Amount, store.Category,
-            quote.Percentage, credited, now, campaignBonus);
+            quote.Percentage, credited, now);
 
         await accountRepository.Save(account);
         await purchaseRepository.Add(purchase);
         await notifier.Notify(account.Owner.Id, $"você ganhou R$ {credited:0.00} de cashback!");
 
-        return new ResponseRegisterPurchaseJson(purchase.Id, store.Category, quote.Percentage, credited, account.Balance, campaignBonus);
+        return new ResponseRegisterPurchaseJson(purchase.Id, store.Category, quote.Percentage, credited, account.Balance);
     }
 
     // O que identifica "a mesma compra": quem, onde e quanto.

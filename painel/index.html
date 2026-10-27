@@ -12,13 +12,12 @@
       <span class="logo">%</span>
       <div>
         <h1>Cashback</h1>
-        <p>app de cashback · API Clean via gateway (:5100)</p>
+        <p>app de cashback · API Clean (:5104)</p>
       </div>
     </div>
     <nav class="abas" role="tablist">
       <button class="aba ativa" data-aba="app" role="tab">App</button>
       <button class="aba" data-aba="loja" role="tab">Loja parceira (HTTP)</button>
-      <button class="aba" data-aba="operacao" role="tab">Operação</button>
     </nav>
     <ul class="status" id="status"></ul>
     <!-- aula 3: o relógio do app, ajustável só na demonstração (para "pular" para a Black Friday) -->
@@ -67,7 +66,7 @@
       <section class="cartao largo">
         <h2>Extrato <small id="extrato-quem"></small></h2>
         <table class="tabela">
-          <thead><tr><th>Quando</th><th>Loja</th><th class="num">Compra</th><th class="num">%</th><th class="num">Cashback</th><th class="num">Black Friday</th></tr></thead>
+          <thead><tr><th>Quando</th><th>Loja</th><th class="num">Compra</th><th class="num">%</th><th class="num">Cashback</th></tr></thead>
           <tbody id="extrato"></tbody>
         </table>
       </section>
@@ -118,33 +117,10 @@
       <section class="cartao largo">
         <h2>Compras do cliente na API Clean <small id="loja-quem"></small></h2>
         <table class="tabela">
-          <thead><tr><th>Quando</th><th>Loja</th><th class="num">Compra</th><th class="num">%</th><th class="num">Cashback</th><th class="num">Black Friday</th></tr></thead>
+          <thead><tr><th>Quando</th><th>Loja</th><th class="num">Compra</th><th class="num">%</th><th class="num">Cashback</th></tr></thead>
           <tbody id="loja-extrato"></tbody>
         </table>
         <p class="dica">Duas linhas iguais com segundos de diferença = a mesma compra paga duas vezes.</p>
-      </section>
-    </div>
-  </main>
-
-  <!-- ───────────── Operação: o que se liga e desliga em produção, sem deploy (aula 3) ───────────── -->
-  <main id="aba-operacao" class="aba-conteudo escondido">
-    <p class="dica topo-dica">O que a operação muda <strong>em produção, sem deploy</strong>. A mudança vale na hora, para a próxima compra, e fica registrada (quem e quando).</p>
-    <div class="grade grade-2">
-      <section class="cartao largo">
-        <h2>Feature flags</h2>
-        <div id="flags" class="flags"></div>
-      </section>
-
-      <section class="cartao largo">
-        <h2>Canário <small>a fatia muda no terminal: <code>./canario.sh 50</code> · <code>./canario.sh 0</code> é o rollback</small></h2>
-        <form id="form-rajada" class="form linha-rajada">
-          <label>Cliente <select name="cliente" class="sel-cliente"></select></label>
-          <label>Loja parceira <select name="loja" class="sel-loja"></select></label>
-          <label>Valor (R$) <input name="valor" type="number" min="0" step="0.01" value="5"></label>
-          <label>Compras <input name="quantas" type="number" min="1" max="100" value="20"></label>
-          <button type="submit">Enviar a rajada</button>
-        </form>
-        <div id="rajada-resultado" class="resultado"></div>
       </section>
     </div>
   </main>

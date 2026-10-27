@@ -2,8 +2,6 @@ using Cashback.Clean.Application.UseCases.Customers.GetBalance;
 using Cashback.Clean.Application.UseCases.Customers.List;
 using Cashback.Clean.Application.UseCases.Customers.ListPurchases;
 using Cashback.Clean.Application.UseCases.Customers.Redeem;
-using Cashback.Clean.Application.UseCases.FeatureFlags.Change;
-using Cashback.Clean.Application.UseCases.FeatureFlags.List;
 using Cashback.Clean.Application.UseCases.Purchases.Get;
 using Cashback.Clean.Application.UseCases.Purchases.Register;
 using Cashback.Clean.Application.UseCases.Stores.List;
@@ -26,7 +24,6 @@ public static class DependencyInjectionExtension
         services.AddSingleton<ICashbackRule, CategoryRule>();
         services.AddSingleton<ICashbackRule, SupermarketDoubleCampaign>();
         services.AddSingleton<ICashbackRule, PharmacyCampaign>();
-        services.AddSingleton<ICashbackRule, BlackFridayCampaign>(); // aula 3: vai desligada, atrás da flag "black-friday"
         services.AddSingleton<CashbackCalculator>();
     }
 
@@ -40,7 +37,5 @@ public static class DependencyInjectionExtension
         services.AddScoped<IListCustomersUseCase, ListCustomersUseCase>();
         services.AddScoped<IListPurchasesUseCase, ListPurchasesUseCase>();
         services.AddScoped<IListStoresUseCase, ListStoresUseCase>();
-        services.AddScoped<IListFeatureFlagsUseCase, ListFeatureFlagsUseCase>();
-        services.AddScoped<IChangeFeatureFlagUseCase, ChangeFeatureFlagUseCase>();
     }
 }

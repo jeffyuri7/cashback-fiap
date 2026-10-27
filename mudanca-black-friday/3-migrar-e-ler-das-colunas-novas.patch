@@ -1,0 +1,159 @@
+diff --git a/clean/src/Cashback.Clean.Application/Abstractions/IPurchaseRepository.cs b/clean/src/Cashback.Clean.Application/Abstractions/IPurchaseRepository.cs
+index 57e2b16..b5fbad5 100644
+--- a/clean/src/Cashback.Clean.Application/Abstractions/IPurchaseRepository.cs
++++ b/clean/src/Cashback.Clean.Application/Abstractions/IPurchaseRepository.cs
+@@ -12,4 +12,5 @@ public interface IPurchaseRepository
+     Task<IList<PurchaseSummary>> ListByCustomer(string customerId);
+ }
+ 
+-public record PurchaseSummary(Guid Id, string StoreName, decimal Amount, decimal Percentage, decimal Cashback, DateTime CreatedAt);
++public record PurchaseSummary(Guid Id, string StoreName, decimal Amount, decimal Percentage, decimal Cashback, DateTime CreatedAt,
++    decimal CampaignBonus);
+diff --git a/clean/src/Cashback.Clean.Application/Dtos/Responses/ResponseCatalogJson.cs b/clean/src/Cashback.Clean.Application/Dtos/Responses/ResponseCatalogJson.cs
+index da0ee75..89219c3 100644
+--- a/clean/src/Cashback.Clean.Application/Dtos/Responses/ResponseCatalogJson.cs
++++ b/clean/src/Cashback.Clean.Application/Dtos/Responses/ResponseCatalogJson.cs
+@@ -4,4 +4,6 @@ public record ResponseCustomerJson(string Id, string Name, decimal Balance);
+ 
+ public record ResponseStoreJson(string Id, string Name, string Category);
+ 
+-public record ResponsePurchaseJson(Guid Id, string StoreName, decimal Amount, decimal Percentage, decimal Cashback, DateTime CreatedAt);
++// campaignBonus (aula 3): campo novo no fim, a parte do cashback que veio da Black Friday
++public record ResponsePurchaseJson(Guid Id, string StoreName, decimal Amount, decimal Percentage, decimal Cashback, DateTime CreatedAt,
++    decimal CampaignBonus = 0);
+diff --git a/clean/src/Cashback.Clean.Application/UseCases/Customers/ListPurchases/ListPurchasesUseCase.cs b/clean/src/Cashback.Clean.Application/UseCases/Customers/ListPurchases/ListPurchasesUseCase.cs
+index a0ab732..b1a0bb5 100644
+--- a/clean/src/Cashback.Clean.Application/UseCases/Customers/ListPurchases/ListPurchasesUseCase.cs
++++ b/clean/src/Cashback.Clean.Application/UseCases/Customers/ListPurchases/ListPurchasesUseCase.cs
+@@ -18,7 +18,7 @@ public class ListPurchasesUseCase(IAccountRepository accountRepository, IPurchas
+ 
+         var purchases = await purchaseRepository.ListByCustomer(customerId);
+         return purchases
+-            .Select(p => new ResponsePurchaseJson(p.Id, p.StoreName, p.Amount, p.Percentage, p.Cashback, p.CreatedAt))
++            .Select(p => new ResponsePurchaseJson(p.Id, p.StoreName, p.Amount, p.Percentage, p.Cashback, p.CreatedAt, p.CampaignBonus))
+             .ToList();
+     }
+ }
+diff --git a/clean/src/Cashback.Clean.Infrastructure/Repositories/Repositories.cs b/clean/src/Cashback.Clean.Infrastructure/Repositories/Repositories.cs
+index 1e7970a..444a0e4 100644
+--- a/clean/src/Cashback.Clean.Infrastructure/Repositories/Repositories.cs
++++ b/clean/src/Cashback.Clean.Infrastructure/Repositories/Repositories.cs
+@@ -31,7 +31,7 @@ public class PurchaseRepository(PostgresConnection db) : IPurchaseRepository
+                                    cashback_base, campaign_bonus)
+             VALUES (@Id, @CustomerId, @StoreId, @Amount, @Category, @Percentage, @Cashback, @CreatedAt,
+                     @CashbackBase, @CampaignBonus)
+-            """, purchase); // expand/contract (aula 3): escreve na coluna antiga (cashback) E nas novas; ainda lê da antiga
++            """, purchase); // expand/contract (aula 3): ainda escreve na coluna antiga (cashback) E nas novas; já lê das novas
+     }
+ 
+     public async Task<Purchase?> Get(Guid id)
+@@ -39,18 +39,18 @@ public class PurchaseRepository(PostgresConnection db) : IPurchaseRepository
+         await using var conn = db.Open();
+         var row = await conn.QuerySingleOrDefaultAsync<PurchaseRow>(
+             """
+-            SELECT id, customer_id AS CustomerId, store_id AS StoreId, amount, category, percentage, cashback,
+-                   created_at AS CreatedAt
++            SELECT id, customer_id AS CustomerId, store_id AS StoreId, amount, category, percentage,
++                   cashback_base + campaign_bonus AS Cashback, created_at AS CreatedAt, campaign_bonus AS CampaignBonus
+             FROM purchases WHERE id = @id
+             """, new { id });
+         return row?.ToEntity();
+     }
+ 
+     private record PurchaseRow(Guid Id, string CustomerId, string StoreId, decimal Amount, string Category,
+-        decimal Percentage, decimal Cashback, DateTime CreatedAt)
++        decimal Percentage, decimal Cashback, DateTime CreatedAt, decimal CampaignBonus)
+     {
+         public Purchase ToEntity() => new(Id, CustomerId, StoreId, Amount, Category, Percentage, Cashback,
+-            new DateTimeOffset(DateTime.SpecifyKind(CreatedAt, DateTimeKind.Utc)));
++            new DateTimeOffset(DateTime.SpecifyKind(CreatedAt, DateTimeKind.Utc)), CampaignBonus);
+     }
+ 
+     public async Task<IList<PurchaseSummary>> ListByCustomer(string customerId)
+@@ -58,7 +58,8 @@ public class PurchaseRepository(PostgresConnection db) : IPurchaseRepository
+         await using var conn = db.Open();
+         var rows = await conn.QueryAsync<PurchaseSummary>(
+             """
+-            SELECT p.id, s.name AS StoreName, p.amount, p.percentage, p.cashback, p.created_at AS CreatedAt
++            SELECT p.id, s.name AS StoreName, p.amount, p.percentage, p.cashback_base + p.campaign_bonus AS Cashback,
++                   p.created_at AS CreatedAt, p.campaign_bonus AS CampaignBonus
+             FROM purchases p JOIN stores s ON s.id = p.store_id
+             WHERE p.customer_id = @customerId ORDER BY p.created_at DESC LIMIT 10
+             """, new { customerId });
+diff --git a/db/migracoes/003-migrar-cashback-por-origem.sql b/db/migracoes/003-migrar-cashback-por-origem.sql
+new file mode 100644
+index 0000000..cf4b0fc
+--- /dev/null
++++ b/db/migracoes/003-migrar-cashback-por-origem.sql
+@@ -0,0 +1,11 @@
++-- Aula 3 · MIGRAR (expand/contract), na segunda-feira, depois da Black Friday.
++-- Só roda quando a v1 não está mais no ar: ela não escreve nas colunas novas, e daqui em diante elas são obrigatórias.
++-- Voltar para a v2 continua seguro (ela escreve nas três colunas). Voltar para a v1 deixa de ser: é o primeiro passo sem volta.
++
++-- 1. As compras antigas ganham as colunas novas: todo o cashback delas era base (não havia bônus de campanha).
++UPDATE purchases SET cashback_base = cashback, campaign_bonus = 0 WHERE cashback_base IS NULL;
++
++-- 2. As colunas novas passam a ser obrigatórias; a antiga deixa de ser, para a v4 poder parar de escrever nela.
++ALTER TABLE purchases ALTER COLUMN cashback_base SET NOT NULL;
++ALTER TABLE purchases ALTER COLUMN campaign_bonus SET NOT NULL;
++ALTER TABLE purchases ALTER COLUMN cashback DROP NOT NULL;
+diff --git a/painel/app.js b/painel/app.js
+index 6b00610..91348b5 100644
+--- a/painel/app.js
++++ b/painel/app.js
+@@ -95,12 +95,13 @@ async function carregarExtrato() {
+   const nome = clientes.find((c) => c.id === clienteExtrato)?.name ?? clienteExtrato;
+   $('#extrato-quem').textContent = `· ${nome}`;
+   const res = await chamar(API, 'GET', `/customers/${clienteExtrato}/purchases`);
+-  $('#extrato').innerHTML = !res.ok ? `<tr><td colspan="5" class="erro">${erroTexto(res)}</td></tr>` :
+-    res.dados.length === 0 ? '<tr><td colspan="5" class="vazio">Nenhuma compra ainda.</td></tr>' :
++  $('#extrato').innerHTML = !res.ok ? `<tr><td colspan="6" class="erro">${erroTexto(res)}</td></tr>` :
++    res.dados.length === 0 ? '<tr><td colspan="6" class="vazio">Nenhuma compra ainda.</td></tr>' :
+     res.dados.map((p) => `<tr>
+         <td>${new Date(p.createdAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' })}</td>
+         <td>${esc(p.storeName)}</td><td class="num">${real(p.amount)}</td>
+-        <td class="num">${pct(p.percentage)}</td><td class="num forte">${real(p.cashback)}</td></tr>`).join('');
++        <td class="num">${pct(p.percentage)}</td><td class="num forte">${real(p.cashback)}</td>
++        <td class="num">${p.campaignBonus ? real(p.campaignBonus) : '—'}</td></tr>`).join('');
+ }
+ 
+ $('#form-compra').onsubmit = async (e) => {
+@@ -216,12 +217,13 @@ async function carregarExtratoLoja() {
+   const [compras, saldo] = await Promise.all([
+     chamar(API, 'GET', `/customers/${id}/purchases`), chamar(API, 'GET', `/customers/${id}/balance`)]);
+   $('#loja-quem').textContent = `· ${nome}${saldo.ok ? ` · saldo ${real(saldo.dados.balance)}` : ''}`;
+-  $('#loja-extrato').innerHTML = !compras.ok ? `<tr><td colspan="5" class="erro">${erroTexto(compras)}</td></tr>` :
+-    compras.dados.length === 0 ? '<tr><td colspan="5" class="vazio">Nenhuma compra ainda.</td></tr>' :
++  $('#loja-extrato').innerHTML = !compras.ok ? `<tr><td colspan="6" class="erro">${erroTexto(compras)}</td></tr>` :
++    compras.dados.length === 0 ? '<tr><td colspan="6" class="vazio">Nenhuma compra ainda.</td></tr>' :
+     compras.dados.map((p) => `<tr>
+         <td>${new Date(p.createdAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' })}</td>
+         <td>${esc(p.storeName)}</td><td class="num">${real(p.amount)}</td>
+-        <td class="num">${pct(p.percentage)}</td><td class="num forte">${real(p.cashback)}</td></tr>`).join('');
++        <td class="num">${pct(p.percentage)}</td><td class="num forte">${real(p.cashback)}</td>
++        <td class="num">${p.campaignBonus ? real(p.campaignBonus) : '—'}</td></tr>`).join('');
+ }
+ 
+ // ───────────── aba "Operação" (aula 3): feature flags ─────────────
+diff --git a/painel/index.html b/painel/index.html
+index 2c35b3b..52a70a5 100644
+--- a/painel/index.html
++++ b/painel/index.html
+@@ -67,7 +67,7 @@
+       <section class="cartao largo">
+         <h2>Extrato <small id="extrato-quem"></small></h2>
+         <table class="tabela">
+-          <thead><tr><th>Quando</th><th>Loja</th><th class="num">Compra</th><th class="num">%</th><th class="num">Cashback</th></tr></thead>
++          <thead><tr><th>Quando</th><th>Loja</th><th class="num">Compra</th><th class="num">%</th><th class="num">Cashback</th><th class="num">Black Friday</th></tr></thead>
+           <tbody id="extrato"></tbody>
+         </table>
+       </section>
+@@ -118,7 +118,7 @@
+       <section class="cartao largo">
+         <h2>Compras do cliente na API Clean <small id="loja-quem"></small></h2>
+         <table class="tabela">
+-          <thead><tr><th>Quando</th><th>Loja</th><th class="num">Compra</th><th class="num">%</th><th class="num">Cashback</th></tr></thead>
++          <thead><tr><th>Quando</th><th>Loja</th><th class="num">Compra</th><th class="num">%</th><th class="num">Cashback</th><th class="num">Black Friday</th></tr></thead>
+           <tbody id="loja-extrato"></tbody>
+         </table>
+         <p class="dica">Duas linhas iguais com segundos de diferença = a mesma compra paga duas vezes.</p>

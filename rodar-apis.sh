@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sobe a API Clean com "dotnet watch": cada alteração no código recompila e reinicia sozinha.
 #   ./rodar-apis.sh          a API Clean (:5104), o projeto que evolui da aula 2 em diante
-#   ./rodar-apis.sh clean    o mesmo (forma usada nos roteiros)
+#   ./rodar-apis.sh clean    o mesmo
 #   ./rodar-apis.sh parar    só encerra o que tiver sobrado rodando (não sobe nada)
 # Ctrl+C para parar. (O banco e o painel sobem com: docker compose up -d)
 # Portas diferentes (para ensaiar numa cópia): CASHBACK_PORTA_API (padrão 5104) e CASHBACK_PORTA_BANCO (padrão 5433).

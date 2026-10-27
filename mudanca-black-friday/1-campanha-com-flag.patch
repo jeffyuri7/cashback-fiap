@@ -1,0 +1,665 @@
+diff --git a/clean/src/Cashback.Clean.Api/Controllers/FeatureFlagsController.cs b/clean/src/Cashback.Clean.Api/Controllers/FeatureFlagsController.cs
+new file mode 100644
+index 0000000..f9d6e8d
+--- /dev/null
++++ b/clean/src/Cashback.Clean.Api/Controllers/FeatureFlagsController.cs
+@@ -0,0 +1,36 @@
++using Cashback.Clean.Api.Models;
++using Cashback.Clean.Application.Dtos.Requests;
++using Cashback.Clean.Application.Dtos.Responses;
++using Cashback.Clean.Application.UseCases.FeatureFlags.Change;
++using Cashback.Clean.Application.UseCases.FeatureFlags.List;
++using Microsoft.AspNetCore.Mvc;
++
++namespace Cashback.Clean.Api.Controllers;
++
++/// <summary>
++/// Ligar e desligar funcionalidades em produção, sem deploy (aula 3): a aba Operação do painel usa estas rotas.
++/// Num sistema real, só a operação teria acesso (autenticação e perfil); no curso, quem chama se identifica no header X-Operador.
++/// </summary>
++[ApiController]
++[Route("feature-flags")]
++public class FeatureFlagsController : ControllerBase
++{
++    [HttpGet]
++    [ProducesResponseType(typeof(IList<ResponseFeatureFlagJson>), StatusCodes.Status200OK)]
++    public async Task<IActionResult> List([FromServices] IListFeatureFlagsUseCase useCase) => Ok(await useCase.Execute());
++
++    [HttpPut("{name}")]
++    [ProducesResponseType(typeof(ResponseFeatureFlagJson), StatusCodes.Status200OK)]
++    [ProducesResponseType(typeof(ResponseErrorJson), StatusCodes.Status400BadRequest)]
++    [ProducesResponseType(StatusCodes.Status404NotFound)]
++    public async Task<IActionResult> Change(
++        [FromServices] IChangeFeatureFlagUseCase useCase,
++        [FromRoute] string name,
++        [FromBody] RequestChangeFeatureFlagJson request,
++        [FromHeader(Name = "X-Operador")] string? operador)
++    {
++        var response = await useCase.Execute(name, request, string.IsNullOrWhiteSpace(operador) ? "não identificado" : operador);
++
++        return Ok(response);
++    }
++}
+diff --git a/clean/src/Cashback.Clean.Application/Abstractions/IFeatureFlags.cs b/clean/src/Cashback.Clean.Application/Abstractions/IFeatureFlags.cs
+new file mode 100644
+index 0000000..6679982
+--- /dev/null
++++ b/clean/src/Cashback.Clean.Application/Abstractions/IFeatureFlags.cs
+@@ -0,0 +1,32 @@
++namespace Cashback.Clean.Application.Abstractions;
++
++/// <summary>Onde as feature flags ficam guardadas (aula 3). A aplicação não sabe se é um banco, um arquivo ou um serviço.</summary>
++public interface IFeatureFlags
++{
++    Task<IList<FeatureFlag>> List();
++    Task<FeatureFlag?> Get(string name);
++    Task Save(FeatureFlag flag);
++}
++
++/// <summary>Desligada · só o grupo de teste (os funcionários) · todos, dentro do horário.</summary>
++public enum FlagState { Off, Test, On }
++
++/// <summary>
++/// Uma feature flag com horário. As três situações:
++/// desligada (ninguém vê), grupo de teste (só os clientes da lista, a qualquer hora, para testar em produção antes)
++/// e todos (todo mundo, mas só entre StartsAt e EndsAt: a campanha liga e desliga sozinha, sem deploy de madrugada).
++/// </summary>
++public record FeatureFlag(
++    string Name, string Description, FlagState State, string[] TestCustomers,
++    DateTimeOffset? StartsAt, DateTimeOffset? EndsAt, string? ChangedBy, DateTimeOffset? ChangedAt)
++{
++    // O "roteador" da flag (Hodgson): decide se ela vale para este cliente, nesta hora.
++    public bool IsEnabledFor(string customerId, DateTimeOffset now) => State switch
++    {
++        FlagState.Test => TestCustomers.Contains(customerId),
++        FlagState.On => InWindow(now),
++        _ => false
++    };
++
++    public bool InWindow(DateTimeOffset now) => (StartsAt is null || now >= StartsAt) && (EndsAt is null || now < EndsAt);
++}
+diff --git a/clean/src/Cashback.Clean.Application/DependencyInjectionExtension.cs b/clean/src/Cashback.Clean.Application/DependencyInjectionExtension.cs
+index d6529b5..a270e8e 100644
+--- a/clean/src/Cashback.Clean.Application/DependencyInjectionExtension.cs
++++ b/clean/src/Cashback.Clean.Application/DependencyInjectionExtension.cs
+@@ -2,6 +2,8 @@ using Cashback.Clean.Application.UseCases.Customers.GetBalance;
+ using Cashback.Clean.Application.UseCases.Customers.List;
+ using Cashback.Clean.Application.UseCases.Customers.ListPurchases;
+ using Cashback.Clean.Application.UseCases.Customers.Redeem;
++using Cashback.Clean.Application.UseCases.FeatureFlags.Change;
++using Cashback.Clean.Application.UseCases.FeatureFlags.List;
+ using Cashback.Clean.Application.UseCases.Purchases.Get;
+ using Cashback.Clean.Application.UseCases.Purchases.Register;
+ using Cashback.Clean.Application.UseCases.Stores.List;
+@@ -24,6 +26,7 @@ public static class DependencyInjectionExtension
+         services.AddSingleton<ICashbackRule, CategoryRule>();
+         services.AddSingleton<ICashbackRule, SupermarketDoubleCampaign>();
+         services.AddSingleton<ICashbackRule, PharmacyCampaign>();
++        services.AddSingleton<ICashbackRule, BlackFridayCampaign>(); // aula 3: vai desligada, atrás da flag "black-friday"
+         services.AddSingleton<CashbackCalculator>();
+     }
+ 
+@@ -37,5 +40,7 @@ public static class DependencyInjectionExtension
+         services.AddScoped<IListCustomersUseCase, ListCustomersUseCase>();
+         services.AddScoped<IListPurchasesUseCase, ListPurchasesUseCase>();
+         services.AddScoped<IListStoresUseCase, ListStoresUseCase>();
++        services.AddScoped<IListFeatureFlagsUseCase, ListFeatureFlagsUseCase>();
++        services.AddScoped<IChangeFeatureFlagUseCase, ChangeFeatureFlagUseCase>();
+     }
+ }
+diff --git a/clean/src/Cashback.Clean.Application/Dtos/Requests/RequestChangeFeatureFlagJson.cs b/clean/src/Cashback.Clean.Application/Dtos/Requests/RequestChangeFeatureFlagJson.cs
+new file mode 100644
+index 0000000..29e774c
+--- /dev/null
++++ b/clean/src/Cashback.Clean.Application/Dtos/Requests/RequestChangeFeatureFlagJson.cs
+@@ -0,0 +1,7 @@
++namespace Cashback.Clean.Application.Dtos.Requests;
++
++public class RequestChangeFeatureFlagJson
++{
++    /// <summary>off · test · on</summary>
++    public string? State { get; set; }
++}
+diff --git a/clean/src/Cashback.Clean.Application/Dtos/Responses/ResponseFeatureFlagJson.cs b/clean/src/Cashback.Clean.Application/Dtos/Responses/ResponseFeatureFlagJson.cs
+new file mode 100644
+index 0000000..59e9665
+--- /dev/null
++++ b/clean/src/Cashback.Clean.Application/Dtos/Responses/ResponseFeatureFlagJson.cs
+@@ -0,0 +1,7 @@
++namespace Cashback.Clean.Application.Dtos.Responses;
++
++/// <param name="State">off · test · on</param>
++/// <param name="AudienceNow">para quem a flag vale agora: none · test-group · everyone</param>
++public record ResponseFeatureFlagJson(
++    string Name, string Description, string State, string[] TestCustomers,
++    DateTimeOffset? StartsAt, DateTimeOffset? EndsAt, string AudienceNow, string? ChangedBy, DateTimeOffset? ChangedAt);
+diff --git a/clean/src/Cashback.Clean.Application/UseCases/FeatureFlags/Change/ChangeFeatureFlagUseCase.cs b/clean/src/Cashback.Clean.Application/UseCases/FeatureFlags/Change/ChangeFeatureFlagUseCase.cs
+new file mode 100644
+index 0000000..5cccae0
+--- /dev/null
++++ b/clean/src/Cashback.Clean.Application/UseCases/FeatureFlags/Change/ChangeFeatureFlagUseCase.cs
+@@ -0,0 +1,29 @@
++using Cashback.Clean.Application.Abstractions;
++using Cashback.Clean.Application.Dtos.Requests;
++using Cashback.Clean.Application.Dtos.Responses;
++using Cashback.Clean.Application.Exceptions;
++
++namespace Cashback.Clean.Application.UseCases.FeatureFlags.Change;
++
++public interface IChangeFeatureFlagUseCase
++{
++    Task<ResponseFeatureFlagJson> Execute(string name, RequestChangeFeatureFlagJson request, string changedBy);
++}
++
++/// <summary>Liga ou desliga uma flag em produção, sem deploy. Guarda quem mudou e quando: a flag é dinâmica, mas não anônima.</summary>
++public class ChangeFeatureFlagUseCase(IFeatureFlags featureFlags, TimeProvider clock) : IChangeFeatureFlagUseCase
++{
++    public async Task<ResponseFeatureFlagJson> Execute(string name, RequestChangeFeatureFlagJson request, string changedBy)
++    {
++        if (request.State is null || !FeatureFlagJson.States.TryGetValue(request.State, out var state))
++            throw new ValidationException(["O estado da flag deve ser off, test ou on."]);
++
++        var flag = await featureFlags.Get(name) ?? throw new NotFoundException("Flag não encontrada.");
++
++        var now = clock.GetUtcNow();
++        var changed = flag with { State = state, ChangedBy = changedBy, ChangedAt = now };
++        await featureFlags.Save(changed);
++
++        return FeatureFlagJson.From(changed, now);
++    }
++}
+diff --git a/clean/src/Cashback.Clean.Application/UseCases/FeatureFlags/FeatureFlagJson.cs b/clean/src/Cashback.Clean.Application/UseCases/FeatureFlags/FeatureFlagJson.cs
+new file mode 100644
+index 0000000..58f8a07
+--- /dev/null
++++ b/clean/src/Cashback.Clean.Application/UseCases/FeatureFlags/FeatureFlagJson.cs
+@@ -0,0 +1,23 @@
++using Cashback.Clean.Application.Abstractions;
++using Cashback.Clean.Application.Dtos.Responses;
++
++namespace Cashback.Clean.Application.UseCases.FeatureFlags;
++
++internal static class FeatureFlagJson
++{
++    public static readonly Dictionary<string, FlagState> States = new()
++    {
++        ["off"] = FlagState.Off, ["test"] = FlagState.Test, ["on"] = FlagState.On
++    };
++
++    public static ResponseFeatureFlagJson From(FeatureFlag flag, DateTimeOffset now) => new(
++        flag.Name, flag.Description, States.First(s => s.Value == flag.State).Key, flag.TestCustomers,
++        flag.StartsAt, flag.EndsAt, AudienceNow(flag, now), flag.ChangedBy, flag.ChangedAt);
++
++    private static string AudienceNow(FeatureFlag flag, DateTimeOffset now) => flag.State switch
++    {
++        FlagState.Test => "test-group",
++        FlagState.On when flag.InWindow(now) => "everyone",
++        _ => "none"
++    };
++}
+diff --git a/clean/src/Cashback.Clean.Application/UseCases/FeatureFlags/List/ListFeatureFlagsUseCase.cs b/clean/src/Cashback.Clean.Application/UseCases/FeatureFlags/List/ListFeatureFlagsUseCase.cs
+new file mode 100644
+index 0000000..fd00641
+--- /dev/null
++++ b/clean/src/Cashback.Clean.Application/UseCases/FeatureFlags/List/ListFeatureFlagsUseCase.cs
+@@ -0,0 +1,18 @@
++using Cashback.Clean.Application.Abstractions;
++using Cashback.Clean.Application.Dtos.Responses;
++
++namespace Cashback.Clean.Application.UseCases.FeatureFlags.List;
++
++public interface IListFeatureFlagsUseCase
++{
++    Task<IList<ResponseFeatureFlagJson>> Execute();
++}
++
++public class ListFeatureFlagsUseCase(IFeatureFlags featureFlags, TimeProvider clock) : IListFeatureFlagsUseCase
++{
++    public async Task<IList<ResponseFeatureFlagJson>> Execute()
++    {
++        var now = clock.GetUtcNow();
++        return (await featureFlags.List()).Select(f => FeatureFlagJson.From(f, now)).ToList();
++    }
++}
+diff --git a/clean/src/Cashback.Clean.Application/UseCases/Purchases/Register/RegisterPurchaseUseCase.cs b/clean/src/Cashback.Clean.Application/UseCases/Purchases/Register/RegisterPurchaseUseCase.cs
+index faee9a3..b3adca5 100644
+--- a/clean/src/Cashback.Clean.Application/UseCases/Purchases/Register/RegisterPurchaseUseCase.cs
++++ b/clean/src/Cashback.Clean.Application/UseCases/Purchases/Register/RegisterPurchaseUseCase.cs
+@@ -15,6 +15,7 @@ public class RegisterPurchaseUseCase(
+     IStoreRepository storeRepository,
+     IPurchaseRepository purchaseRepository,
+     IIdempotencyStore idempotencyStore,
++    IFeatureFlags featureFlags,
+     ICustomerNotifier notifier,
+     TimeProvider clock) : IRegisterPurchaseUseCase
+ {
+@@ -60,7 +61,10 @@ public class RegisterPurchaseUseCase(
+             ?? throw new NotFoundException("Cliente não encontrado.");
+ 
+         var now = clock.GetUtcNow();
+-        var quote = calculator.Calculate(request.Amount, store.Category, now);
++        // as flags ligadas para este cliente, agora (aula 3): a regra da Black Friday só entra se a dela estiver ligada
++        var enabledFlags = (await featureFlags.List())
++            .Where(flag => flag.IsEnabledFor(account.Owner.Id, now)).Select(flag => flag.Name).ToHashSet();
++        var quote = calculator.Calculate(request.Amount, store.Category, now, enabledFlags);
+         var credited = account.Credit(quote.Amount, now);
+ 
+         var purchase = new Purchase(Guid.NewGuid(), account.Owner.Id, store.Id, request.Amount, store.Category,
+diff --git a/clean/src/Cashback.Clean.Domain/Rules/BlackFridayCampaign.cs b/clean/src/Cashback.Clean.Domain/Rules/BlackFridayCampaign.cs
+new file mode 100644
+index 0000000..b6f94d4
+--- /dev/null
++++ b/clean/src/Cashback.Clean.Domain/Rules/BlackFridayCampaign.cs
+@@ -0,0 +1,18 @@
++namespace Cashback.Clean.Domain.Rules;
++
++/// <summary>
++/// Campanha de Black Friday (aula 3): +5% em todas as lojas, menos combustível.
++/// Vai para produção desligada, atrás da feature flag "black-friday". O horário da campanha
++/// (sexta 27/11 00h00 a domingo 29/11 23h59) fica na flag, não aqui: quem liga é o relógio, não um deploy.
++/// </summary>
++public class BlackFridayCampaign : ICashbackRule
++{
++    public string? Flag => "black-friday";
++
++    public decimal PercentageFor(string category, DateTimeOffset purchaseDate) => category switch
++    {
++        "fuel" => 0m,
++        "pharmacy" => 0.10m, // a farmácia já tem campanha própria: 5% dela + 5% da Black Friday
++        _ => 0.05m
++    };
++}
+diff --git a/clean/src/Cashback.Clean.Domain/Rules/CashbackCalculator.cs b/clean/src/Cashback.Clean.Domain/Rules/CashbackCalculator.cs
+index 03f7e05..1f32aff 100644
+--- a/clean/src/Cashback.Clean.Domain/Rules/CashbackCalculator.cs
++++ b/clean/src/Cashback.Clean.Domain/Rules/CashbackCalculator.cs
+@@ -3,9 +3,13 @@ namespace Cashback.Clean.Domain.Rules;
+ /// <summary>Soma o que cada regra concede. Não conhece nenhuma regra específica.</summary>
+ public class CashbackCalculator(IEnumerable<ICashbackRule> rules)
+ {
+-    public CashbackQuote Calculate(decimal amount, string category, DateTimeOffset purchaseDate)
++    /// <param name="enabledFlags">As flags ligadas para quem comprou (aula 3). Regra com flag desligada não entra na conta.</param>
++    public CashbackQuote Calculate(decimal amount, string category, DateTimeOffset purchaseDate,
++        IReadOnlySet<string>? enabledFlags = null)
+     {
+-        var percentage = rules.Sum(rule => rule.PercentageFor(category, purchaseDate));
++        var percentage = rules
++            .Where(rule => rule.Flag is null || (enabledFlags?.Contains(rule.Flag) ?? false))
++            .Sum(rule => rule.PercentageFor(category, purchaseDate));
+         return new CashbackQuote(percentage, Math.Round(amount * percentage, 2, MidpointRounding.AwayFromZero));
+     }
+ }
+diff --git a/clean/src/Cashback.Clean.Domain/Rules/ICashbackRule.cs b/clean/src/Cashback.Clean.Domain/Rules/ICashbackRule.cs
+index 69e37a5..b5489f0 100644
+--- a/clean/src/Cashback.Clean.Domain/Rules/ICashbackRule.cs
++++ b/clean/src/Cashback.Clean.Domain/Rules/ICashbackRule.cs
+@@ -7,4 +7,10 @@ namespace Cashback.Clean.Domain.Rules;
+ public interface ICashbackRule
+ {
+     decimal PercentageFor(string category, DateTimeOffset purchaseDate);
++
++    /// <summary>
++    /// A feature flag que liga a regra (aula 3). Sem flag (o padrão), a regra vale sempre.
++    /// Com flag, a regra vai para produção desligada e só vale quando a flag estiver ligada para aquele cliente.
++    /// </summary>
++    string? Flag => null;
+ }
+diff --git a/clean/src/Cashback.Clean.Infrastructure/DependencyInjectionExtension.cs b/clean/src/Cashback.Clean.Infrastructure/DependencyInjectionExtension.cs
+index 092883e..cfb4739 100644
+--- a/clean/src/Cashback.Clean.Infrastructure/DependencyInjectionExtension.cs
++++ b/clean/src/Cashback.Clean.Infrastructure/DependencyInjectionExtension.cs
+@@ -23,6 +23,7 @@ public static class DependencyInjectionExtension
+         services.AddScoped<IPurchaseRepository, PurchaseRepository>();
+         services.AddScoped<IRedemptionRepository, RedemptionRepository>();
+         services.AddScoped<IIdempotencyStore, IdempotencyStore>();
++        services.AddScoped<IFeatureFlags, FeatureFlagRepository>();
+ 
+         // transient: um novo a cada uso
+         services.AddTransient<ICustomerNotifier, LogCustomerNotifier>();
+diff --git a/clean/src/Cashback.Clean.Infrastructure/Repositories/FeatureFlagRepository.cs b/clean/src/Cashback.Clean.Infrastructure/Repositories/FeatureFlagRepository.cs
+new file mode 100644
+index 0000000..13930f4
+--- /dev/null
++++ b/clean/src/Cashback.Clean.Infrastructure/Repositories/FeatureFlagRepository.cs
+@@ -0,0 +1,57 @@
++using Cashback.Clean.Application.Abstractions;
++using Cashback.Clean.Infrastructure.DataAccess;
++using Dapper;
++
++namespace Cashback.Clean.Infrastructure.Repositories;
++
++/// <summary>
++/// As flags ficam no banco da aplicação (aula 3). Hodgson prefere configuração versionada no código, mas um
++/// kill switch precisa mudar em segundos, em produção, sem deploy: por isso a troca grava quem mudou e quando.
++/// </summary>
++public class FeatureFlagRepository(PostgresConnection db) : IFeatureFlags
++{
++    private const string Columns =
++        "name, description, state, test_customers AS TestCustomers, starts_at AS StartsAt, ends_at AS EndsAt, " +
++        "changed_by AS ChangedBy, changed_at AS ChangedAt";
++
++    public async Task<IList<FeatureFlag>> List()
++    {
++        await using var conn = db.Open();
++        var rows = await conn.QueryAsync<FlagRow>($"SELECT {Columns} FROM feature_flags ORDER BY name");
++        return rows.Select(r => r.ToFlag()).ToList();
++    }
++
++    public async Task<FeatureFlag?> Get(string name)
++    {
++        await using var conn = db.Open();
++        var row = await conn.QuerySingleOrDefaultAsync<FlagRow>($"SELECT {Columns} FROM feature_flags WHERE name = @name", new { name });
++        return row?.ToFlag();
++    }
++
++    public async Task Save(FeatureFlag flag)
++    {
++        await using var conn = db.Open();
++        await conn.ExecuteAsync(
++            "UPDATE feature_flags SET state = @State, changed_by = @ChangedBy, changed_at = @ChangedAt WHERE name = @Name",
++            new { flag.Name, State = flag.State.ToString().ToLowerInvariant(), flag.ChangedBy, flag.ChangedAt });
++    }
++
++    // classe com propriedades (e não record posicional): o Dapper não casa o text[] do Postgres com um construtor
++    private class FlagRow
++    {
++        public string Name { get; init; } = "";
++        public string Description { get; init; } = "";
++        public string State { get; init; } = "off";
++        public string[] TestCustomers { get; init; } = [];
++        public DateTime? StartsAt { get; init; }
++        public DateTime? EndsAt { get; init; }
++        public string? ChangedBy { get; init; }
++        public DateTime? ChangedAt { get; init; }
++
++        public FeatureFlag ToFlag() => new(Name, Description, Enum.Parse<FlagState>(State, ignoreCase: true), TestCustomers,
++            Utc(StartsAt), Utc(EndsAt), ChangedBy, Utc(ChangedAt));
++
++        private static DateTimeOffset? Utc(DateTime? value) =>
++            value is null ? null : new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc));
++    }
++}
+diff --git a/clean/tests/Cashback.Clean.Tests/Application/FeatureFlagTests.cs b/clean/tests/Cashback.Clean.Tests/Application/FeatureFlagTests.cs
+new file mode 100644
+index 0000000..4402ac3
+--- /dev/null
++++ b/clean/tests/Cashback.Clean.Tests/Application/FeatureFlagTests.cs
+@@ -0,0 +1,39 @@
++using Cashback.Clean.Application.Abstractions;
++
++namespace Cashback.Clean.Tests.Application;
++
++// Para quem a flag vale, e quando (aula 3).
++public class FeatureFlagTests
++{
++    private static readonly DateTimeOffset Starts = new(2026, 11, 27, 0, 0, 0, TimeSpan.FromHours(-3));
++    private static readonly DateTimeOffset Ends = new(2026, 11, 30, 0, 0, 0, TimeSpan.FromHours(-3));
++
++    private static FeatureFlag Flag(FlagState state) =>
++        new("black-friday", "Black Friday", state, ["c-001"], Starts, Ends, null, null);
++
++    [Fact]
++    public void Off_is_off_for_everyone()
++    {
++        Assert.False(Flag(FlagState.Off).IsEnabledFor("c-001", Starts.AddHours(1)));
++    }
++
++    [Fact]
++    public void Test_is_on_only_for_the_test_group_even_before_the_start()
++    {
++        var thursday = Starts.AddHours(-7);
++
++        Assert.True(Flag(FlagState.Test).IsEnabledFor("c-001", thursday));
++        Assert.False(Flag(FlagState.Test).IsEnabledFor("c-002", thursday));
++    }
++
++    [Fact]
++    public void On_turns_itself_on_at_the_start_and_off_at_the_end()
++    {
++        var flag = Flag(FlagState.On);
++
++        Assert.False(flag.IsEnabledFor("c-002", Starts.AddSeconds(-1)));
++        Assert.True(flag.IsEnabledFor("c-002", Starts));
++        Assert.True(flag.IsEnabledFor("c-002", Ends.AddSeconds(-1)));
++        Assert.False(flag.IsEnabledFor("c-002", Ends));
++    }
++}
+diff --git a/clean/tests/Cashback.Clean.Tests/Domain/BlackFridayCampaignTests.cs b/clean/tests/Cashback.Clean.Tests/Domain/BlackFridayCampaignTests.cs
+new file mode 100644
+index 0000000..8d83299
+--- /dev/null
++++ b/clean/tests/Cashback.Clean.Tests/Domain/BlackFridayCampaignTests.cs
+@@ -0,0 +1,37 @@
++using Cashback.Clean.Domain.Rules;
++
++namespace Cashback.Clean.Tests.Domain;
++
++// A campanha da Black Friday (aula 3): +5% em todas as lojas, menos combustível, e só com a flag ligada.
++public class BlackFridayCampaignTests
++{
++    private static readonly DateTimeOffset BlackFriday = new(2026, 11, 27, 12, 0, 0, TimeSpan.FromHours(-3));
++    private static readonly HashSet<string> FlagOn = ["black-friday"];
++
++    private static CashbackCalculator CreateCalculator() =>
++        new([new CategoryRule(), new SupermarketDoubleCampaign(), new BlackFridayCampaign()]);
++
++    [Fact]
++    public void Supermarket_gets_5_percent_more_with_the_flag_on()
++    {
++        var quote = CreateCalculator().Calculate(100m, "supermarket", BlackFriday, FlagOn);
++
++        Assert.Equal(0.09m, quote.Percentage); // 2% + 2% (supermercado em dobro) + 5% (Black Friday)
++    }
++
++    [Fact]
++    public void Fuel_is_out_of_the_campaign()
++    {
++        var quote = CreateCalculator().Calculate(100m, "fuel", BlackFriday, FlagOn);
++
++        Assert.Equal(0.03m, quote.Percentage);
++    }
++
++    [Fact]
++    public void With_the_flag_off_the_campaign_does_not_count()
++    {
++        var quote = CreateCalculator().Calculate(100m, "supermarket", BlackFriday);
++
++        Assert.Equal(0.04m, quote.Percentage);
++    }
++}
+diff --git a/clean/tests/Cashback.Clean.Tests/Fakes/FakeFeatureFlags.cs b/clean/tests/Cashback.Clean.Tests/Fakes/FakeFeatureFlags.cs
+new file mode 100644
+index 0000000..6a8dc47
+--- /dev/null
++++ b/clean/tests/Cashback.Clean.Tests/Fakes/FakeFeatureFlags.cs
+@@ -0,0 +1,18 @@
++using Cashback.Clean.Application.Abstractions;
++
++namespace Cashback.Clean.Tests.Fakes;
++
++public class FakeFeatureFlags : IFeatureFlags
++{
++    public Dictionary<string, FeatureFlag> Flags { get; } = new();
++
++    public Task<IList<FeatureFlag>> List() => Task.FromResult<IList<FeatureFlag>>(Flags.Values.ToList());
++
++    public Task<FeatureFlag?> Get(string name) => Task.FromResult(Flags.GetValueOrDefault(name));
++
++    public Task Save(FeatureFlag flag)
++    {
++        Flags[flag.Name] = flag;
++        return Task.CompletedTask;
++    }
++}
+diff --git a/clean/tests/Cashback.Clean.Tests/UseCases/RegisterPurchaseUseCaseTests.cs b/clean/tests/Cashback.Clean.Tests/UseCases/RegisterPurchaseUseCaseTests.cs
+index 8fcfd1b..a85f64b 100644
+--- a/clean/tests/Cashback.Clean.Tests/UseCases/RegisterPurchaseUseCaseTests.cs
++++ b/clean/tests/Cashback.Clean.Tests/UseCases/RegisterPurchaseUseCaseTests.cs
+@@ -13,6 +13,7 @@ public class RegisterPurchaseUseCaseTests
+     private readonly FakeAccountRepository _accounts = new();
+     private readonly FakePurchaseRepository _purchases = new();
+     private readonly FakeIdempotencyStore _idempotency = new();
++    private readonly FakeFeatureFlags _flags = new();
+     private readonly FakeNotifier _notifier = new();
+     private readonly FixedTimeProvider _clock = new(new DateTimeOffset(2026, 10, 15, 12, 0, 0, TimeSpan.Zero));
+ 
+@@ -21,7 +22,7 @@ public class RegisterPurchaseUseCaseTests
+ 
+     private RegisterPurchaseUseCase CreateUseCase() => new(
+         new CashbackCalculator([new CategoryRule(), new SupermarketDoubleCampaign()]),
+-        _accounts, new FakeStoreRepository(), _purchases, _idempotency, _notifier, _clock);
++        _accounts, new FakeStoreRepository(), _purchases, _idempotency, _flags, _notifier, _clock);
+ 
+     [Fact]
+     public async Task Registers_the_purchase_credits_the_cashback_and_notifies()
+diff --git a/db/migracoes/001-feature-flags.sql b/db/migracoes/001-feature-flags.sql
+new file mode 100644
+index 0000000..eb238f8
+--- /dev/null
++++ b/db/migracoes/001-feature-flags.sql
+@@ -0,0 +1,18 @@
++-- Aula 3 · as feature flags do app, com horário.
++-- state: off (ninguém) · test (só os clientes de test_customers, a qualquer hora) · on (todos, entre starts_at e ends_at).
++CREATE TABLE feature_flags (
++    name            text PRIMARY KEY,
++    description     text NOT NULL,
++    state           text NOT NULL DEFAULT 'off' CHECK (state IN ('off', 'test', 'on')),
++    test_customers  text[] NOT NULL DEFAULT '{}',
++    starts_at       timestamptz,
++    ends_at         timestamptz,
++    changed_by      text,
++    changed_at      timestamptz
++);
++
++-- A Black Friday de 2026: sexta 27/11 00h00 até domingo 29/11 23h59, no horário de Brasília.
++-- O grupo de teste é a Ana Souza (c-001), funcionária do app, que testa a campanha em produção antes de todos.
++INSERT INTO feature_flags (name, description, test_customers, starts_at, ends_at) VALUES
++    ('black-friday', 'Black Friday: +5% em todas as lojas, menos combustível', '{c-001}',
++     '2026-11-27 00:00:00-03', '2026-11-30 00:00:00-03');
+diff --git a/painel/app.js b/painel/app.js
+index da2e67f..cfb9757 100644
+--- a/painel/app.js
++++ b/painel/app.js
+@@ -218,6 +218,48 @@ async function carregarExtratoLoja() {
+         <td class="num">${pct(p.percentage)}</td><td class="num forte">${real(p.cashback)}</td></tr>`).join('');
+ }
+ 
++// ───────────── aba "Operação" (aula 3): feature flags ─────────────
++const ESTADOS = [
++  { valor: 'off', rotulo: 'Desligada' },
++  { valor: 'test', rotulo: 'Grupo de teste' },
++  { valor: 'on', rotulo: 'Todos, no horário' },
++];
++const PUBLICO = { none: 'ninguém', 'test-group': 'só o grupo de teste', everyone: 'todos' };
++const dataHora = (iso) => new Date(iso).toLocaleString('pt-BR', { ...HORA, second: undefined });
++
++async function carregarFlags() {
++  const res = await chamar(API, 'GET', '/feature-flags');
++  const caixa = $('#flags');
++  if (!res.ok) {
++    caixa.innerHTML = `<p class="erro">${res.status === 404 ? 'Esta versão da API ainda não tem feature flags.' : erroTexto(res)}</p>`;
++    return;
++  }
++  caixa.innerHTML = res.dados.map((f) => {
++    const grupo = f.testCustomers.map((id) => clientes.find((c) => c.id === id)?.name ?? id).join(', ');
++    // o fim é exclusivo (00h00 de segunda); para ler, mostra o último minuto da campanha
++    const fim = f.endsAt ? dataHora(new Date(new Date(f.endsAt).getTime() - 60000)) : 'sem fim';
++    return `<div class="flag">
++        <div class="flag-nome"><code>${esc(f.name)}</code><span>${esc(f.description)}</span></div>
++        <div class="flag-estados" role="group">${ESTADOS.map((e) =>
++          `<button data-flag="${esc(f.name)}" data-estado="${e.valor}" class="${f.state === e.valor ? 'ativo' : ''}">${e.rotulo}</button>`).join('')}
++        </div>
++        <dl class="flag-dados">
++          <dt>Vale agora para</dt><dd class="publico ${f.audienceNow}">${PUBLICO[f.audienceNow]}</dd>
++          <dt>Horário (todos)</dt><dd>${f.startsAt ? dataHora(f.startsAt) : 'sem início'} → ${fim}</dd>
++          <dt>Grupo de teste</dt><dd>${esc(grupo || 'ninguém')}</dd>
++          <dt>Última mudança</dt><dd>${f.changedAt ? `${esc(f.changedBy)}, ${dataHora(f.changedAt)}` : 'nunca mudou'}</dd>
++        </dl>
++      </div>`;
++  }).join('');
++  $$('#flags [data-estado]').forEach((b) => b.onclick = async () => {
++    await fetch(`http://localhost:${API.porta}/feature-flags/${b.dataset.flag}`, {
++      method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Operador': 'painel' },
++      body: JSON.stringify({ state: b.dataset.estado }),
++    }).catch(() => null);
++    carregarFlags();
++  });
++}
++
+ // ───────────── relógio do app (aula 3) ─────────────
+ // A API diz que horas são para ela; o painel faz o relógio andar entre uma consulta e outra.
+ let relogio = null; // { app: hora do app, local: hora do navegador na consulta, ajustado }
+@@ -243,6 +285,7 @@ $('#relogio-pular').onchange = async (e) => {
+   await (alvo ? chamar(API, 'PUT', '/demo/clock', { now: alvo }) : chamar(API, 'DELETE', '/demo/clock'));
+   await lerRelogio();
+   carregarApp();
++  if (!$('#aba-operacao').classList.contains('escondido')) carregarFlags();
+ };
+ setInterval(desenharRelogio, 1000);
+ 
+@@ -251,7 +294,9 @@ $$('.aba').forEach((b) => b.onclick = () => {
+   $$('.aba').forEach((x) => x.classList.toggle('ativa', x === b));
+   $('#aba-app').classList.toggle('escondido', b.dataset.aba !== 'app');
+   $('#aba-loja').classList.toggle('escondido', b.dataset.aba !== 'loja');
++  $('#aba-operacao').classList.toggle('escondido', b.dataset.aba !== 'operacao');
+   if (b.dataset.aba === 'app') carregarApp();
++  else if (b.dataset.aba === 'operacao') carregarFlags();
+   else { if (!campo('corpo').value) montarCorpo(); carregarExtratoLoja(); }
+ });
+ 
+diff --git a/painel/index.html b/painel/index.html
+index ad48621..70f4351 100644
+--- a/painel/index.html
++++ b/painel/index.html
+@@ -18,6 +18,7 @@
+     <nav class="abas" role="tablist">
+       <button class="aba ativa" data-aba="app" role="tab">App</button>
+       <button class="aba" data-aba="loja" role="tab">Loja parceira (HTTP)</button>
++      <button class="aba" data-aba="operacao" role="tab">Operação</button>
+     </nav>
+     <ul class="status" id="status"></ul>
+     <!-- aula 3: o relógio do app, ajustável só na demonstração (para "pular" para a Black Friday) -->
+@@ -125,6 +126,17 @@
+     </div>
+   </main>
+ 
++  <!-- ───────────── Operação: o que se liga e desliga em produção, sem deploy (aula 3) ───────────── -->
++  <main id="aba-operacao" class="aba-conteudo escondido">
++    <p class="dica topo-dica">O que a operação muda <strong>em produção, sem deploy</strong>. A mudança vale na hora, para a próxima compra, e fica registrada (quem e quando).</p>
++    <div class="grade grade-2">
++      <section class="cartao largo">
++        <h2>Feature flags</h2>
++        <div id="flags" class="flags"></div>
++      </section>
++    </div>
++  </main>
++
+   <script src="app.js"></script>
+ </body>
+ </html>
+diff --git a/painel/style.css b/painel/style.css
+index d1dc628..437af64 100644
+--- a/painel/style.css
++++ b/painel/style.css
+@@ -142,3 +142,21 @@ button, input, select, textarea { font: inherit; }
+ 
+ @media (max-width: 1000px) {
+   .grade, }
++
++/* aula 3: aba Operação */
++.flags { display: flex; flex-direction: column; gap: 16px; }
++.flag { display: grid; grid-template-columns: 1fr auto; gap: 12px 24px; align-items: center;
++  border: 1px solid var(--linha); border-radius: 12px; padding: 14px 16px; }
++.flag-nome { display: flex; flex-direction: column; gap: 2px; }
++.flag-nome code { font-size: 16px; font-weight: 700; }
++.flag-nome span { color: var(--mudo); font-size: 14px; }
++.flag-estados { display: flex; gap: 6px; }
++.flag-estados button { border: 2px solid var(--linha); background: #fff; border-radius: 999px; padding: 6px 14px; cursor: pointer; }
++.flag-estados button.ativo { border-color: var(--roxo); background: var(--roxo); color: #fff; font-weight: 700; }
++.flag-dados { grid-column: 1 / -1; display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 14px; }
++.flag-dados dt { color: var(--mudo); }
++.flag-dados dd { margin: 0; }
++.publico { font-weight: 700; }
++.publico.everyone { color: var(--verde); }
++.publico.test-group { color: #b45309; }
++.publico.none { color: var(--mudo); }

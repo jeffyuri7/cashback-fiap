@@ -23,7 +23,6 @@ public static class DependencyInjectionExtension
         services.AddScoped<IPurchaseRepository, PurchaseRepository>();
         services.AddScoped<IRedemptionRepository, RedemptionRepository>();
         services.AddScoped<IIdempotencyStore, IdempotencyStore>();
-        services.AddScoped<IFeatureFlags, FeatureFlagRepository>();
 
         // transient: um novo a cada uso
         services.AddTransient<ICustomerNotifier, LogCustomerNotifier>();

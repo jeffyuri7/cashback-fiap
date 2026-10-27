@@ -1,4 +1,3 @@
-using Cashback.Clean.Application.Abstractions;
 using Cashback.Clean.Application.Dtos.Requests;
 using Cashback.Clean.Application.Exceptions;
 using Cashback.Clean.Application.UseCases.Purchases.Register;
@@ -14,7 +13,6 @@ public class RegisterPurchaseUseCaseTests
     private readonly FakeAccountRepository _accounts = new();
     private readonly FakePurchaseRepository _purchases = new();
     private readonly FakeIdempotencyStore _idempotency = new();
-    private readonly FakeFeatureFlags _flags = new();
     private readonly FakeNotifier _notifier = new();
     private readonly FixedTimeProvider _clock = new(new DateTimeOffset(2026, 10, 15, 12, 0, 0, TimeSpan.Zero));
 
@@ -23,7 +21,7 @@ public class RegisterPurchaseUseCaseTests
 
     private RegisterPurchaseUseCase CreateUseCase() => new(
         new CashbackCalculator([new CategoryRule(), new SupermarketDoubleCampaign()]),
-        _accounts, new FakeStoreRepository(), _purchases, _idempotency, _flags, _notifier, _clock);
+        _accounts, new FakeStoreRepository(), _purchases, _idempotency, _notifier, _clock);
 
     [Fact]
     public async Task Registers_the_purchase_credits_the_cashback_and_notifies()
@@ -57,25 +55,6 @@ public class RegisterPurchaseUseCaseTests
         var request = new RequestRegisterPurchaseJson { CustomerId = "c-999", StoreId = "s-mercado", Amount = 10m };
 
         await Assert.ThrowsAsync<NotFoundException>(() => CreateUseCase().Execute(request));
-    }
-
-    // ───────────── aula 3: o bônus da campanha guardado à parte ─────────────
-
-    [Fact]
-    public async Task The_campaign_bonus_is_kept_apart_from_the_base_cashback()
-    {
-        _flags.Flags["black-friday"] = new("black-friday", "Black Friday", FlagState.On,
-            [], null, null, null, null);
-        var useCase = new RegisterPurchaseUseCase(
-            new CashbackCalculator([new CategoryRule(), new SupermarketDoubleCampaign(), new BlackFridayCampaign()]),
-            _accounts, new FakeStoreRepository(), _purchases, _idempotency, _flags, _notifier, _clock);
-
-        var response = (await useCase.Execute(
-            new RequestRegisterPurchaseJson { CustomerId = "c-001", StoreId = "s-mercado", Amount = 100m })).Response;
-
-        Assert.Equal(9m, response.Cashback);          // 2% + 2% + 5%
-        Assert.Equal(5m, response.CampaignBonus);
-        Assert.Equal(4m, _purchases.Added.Single().CashbackBase);
     }
 
     // ───────────── aula 2: idempotência ─────────────

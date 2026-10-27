@@ -1,8 +1,8 @@
 # Sobe o banco (com as tabelas e os dados de exemplo) e o painel.
 # A API Clean roda na sua máquina (./rodar-apis.sh, com dotnet watch), para dar para alterar o código ao vivo.
-#   docker compose up -d      → banco em localhost:5433 · painel em http://localhost:8080 · gateway em localhost:5100
+#   docker compose up -d      → banco em localhost:5433 · painel em http://localhost:8080
 #   ./reset.sh                → volta o banco ao estado inicial
-# As portas podem mudar por variável de ambiente (CASHBACK_PORTA_BANCO, CASHBACK_PORTA_PAINEL, CASHBACK_PORTA_GATEWAY),
+# As portas podem mudar por variável de ambiente (CASHBACK_PORTA_BANCO, CASHBACK_PORTA_PAINEL),
 # por exemplo para ensaiar a aula numa cópia sem derrubar o ambiente de sempre.
 name: cashback
 
@@ -28,14 +28,3 @@ services:
       - "${CASHBACK_PORTA_PAINEL:-8080}:80"
     volumes:
       - ./painel:/usr/share/nginx/html:ro
-
-  # Aula 3 · o gateway na frente da API: divide o tráfego entre a versão estável e o canário.
-  # A divisão está em nginx/canario.conf, escrita pelo ./canario.sh (ex.: ./canario.sh 10).
-  gateway:
-    image: nginx:alpine
-    ports:
-      - "${CASHBACK_PORTA_GATEWAY:-5100}:80"
-    volumes:
-      - ./nginx:/etc/nginx/conf.d:ro
-    # A API roda na máquina, fora do Docker: o nginx a encontra em host.docker.internal (Docker Desktop, Mac e Windows).
-    # No Linux, acrescente  extra_hosts: ["host.docker.internal:host-gateway"]  e confira que o nome resolve só para IPv4.

@@ -1,0 +1,29 @@
+diff --git a/clean/src/Cashback.Clean.Infrastructure/Repositories/Repositories.cs b/clean/src/Cashback.Clean.Infrastructure/Repositories/Repositories.cs
+index 444a0e4..ff24ebe 100644
+--- a/clean/src/Cashback.Clean.Infrastructure/Repositories/Repositories.cs
++++ b/clean/src/Cashback.Clean.Infrastructure/Repositories/Repositories.cs
+@@ -27,11 +27,11 @@ public class PurchaseRepository(PostgresConnection db) : IPurchaseRepository
+         await using var conn = db.Open();
+         await conn.ExecuteAsync(
+             """
+-            INSERT INTO purchases (id, customer_id, store_id, amount, category, percentage, cashback, created_at,
++            INSERT INTO purchases (id, customer_id, store_id, amount, category, percentage, created_at,
+                                    cashback_base, campaign_bonus)
+-            VALUES (@Id, @CustomerId, @StoreId, @Amount, @Category, @Percentage, @Cashback, @CreatedAt,
++            VALUES (@Id, @CustomerId, @StoreId, @Amount, @Category, @Percentage, @CreatedAt,
+                     @CashbackBase, @CampaignBonus)
+-            """, purchase); // expand/contract (aula 3): ainda escreve na coluna antiga (cashback) E nas novas; já lê das novas
++            """, purchase); // expand/contract (aula 3): só as colunas novas; a antiga (cashback) sai na migração 004
+     }
+ 
+     public async Task<Purchase?> Get(Guid id)
+diff --git a/db/migracoes/004-contrair-remover-cashback-antigo.sql b/db/migracoes/004-contrair-remover-cashback-antigo.sql
+new file mode 100644
+index 0000000..f60e297
+--- /dev/null
++++ b/db/migracoes/004-contrair-remover-cashback-antigo.sql
+@@ -0,0 +1,4 @@
++-- Aula 3 · CONTRAIR (expand/contract): a coluna antiga sai.
++-- Só roda quando nenhuma versão no ar usa mais a coluna cashback: a v4, que parou de escrever nela, em 100% do tráfego.
++-- É uma porta de mão única: depois dela, nenhuma versão anterior à v3 funciona, e o dado da coluna não volta.
++ALTER TABLE purchases DROP COLUMN cashback;

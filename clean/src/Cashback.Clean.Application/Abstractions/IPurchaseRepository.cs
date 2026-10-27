@@ -12,5 +12,4 @@ public interface IPurchaseRepository
     Task<IList<PurchaseSummary>> ListByCustomer(string customerId);
 }
 
-public record PurchaseSummary(Guid Id, string StoreName, decimal Amount, decimal Percentage, decimal Cashback, DateTime CreatedAt,
-    decimal CampaignBonus);
+public record PurchaseSummary(Guid Id, string StoreName, decimal Amount, decimal Percentage, decimal Cashback, DateTime CreatedAt);
